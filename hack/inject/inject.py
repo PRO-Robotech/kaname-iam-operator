@@ -179,7 +179,7 @@ INJ = [
   "\t\tif !slices.Contains(names, p.Name) {\n\t\t\tnext = append(next, p)", "\t\tif false {\n\t\t\tnext = append(next, p)",
   "./internal/policy/", "TestAdmissionGuaranteeKeepsEachPolicyWitness"),
  ("I47 rewitness honoured before the policies were seen", "internal/policy/admission.go",
-  "if nonce != \"\" && confirmed && bad == nil {", "if nonce != \"\" && bad == nil {",
+  "if nonce != \"\" && confirmed && bad == nil {", "if nonce != \"\" && (confirmed || true) && bad == nil {",
   "./internal/policy/ ./internal/controller/", "TestAdmissionGuaranteeRewitnessByThePlatform|TestABReinstalledGuardWithdrawsAndThePlatformRewitnessRestores"),
  ("I48 rewitness never honoured", "internal/policy/admission.go",
   "\t\t\tg.Rewitnessed, late = true, nil\n", "\t\t\tg.Rewitnessed = true\n",
