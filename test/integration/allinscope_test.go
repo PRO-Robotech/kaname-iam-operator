@@ -170,24 +170,27 @@ func human(ctx context.Context, t *testing.T) (userID, foreignAccount, foreignPr
 }
 
 // TestAllInScopeAccountGrantReachesEveryRegistryOfTheAccount — выдача на всю
-// область аккаунта от принципала платформы: человек с registry.pusher на
-// аккаунт получает v_update на репозитории двух реестров аккаунта, в том числе
-// реестра, зарегистрированного ПОСЛЕ выдачи; на репозиторий реестра другого
-// аккаунта — отказ. Та же выдача от писателя, не являющегося платформой,
-// отвергается допуском. Удаление CR отзывает выдачу, и право уходит.
+// область аккаунта от принципала платформы: человек и учётка-робот с
+// registry.pusher на аккаунт получают v_update на репозитории двух реестров
+// аккаунта, в том числе реестра, зарегистрированного ПОСЛЕ выдачи; на
+// репозиторий реестра другого аккаунта — отказ. Та же выдача от писателя, не
+// являющегося платформой, отвергается допуском. Удаление CR отзывает выдачу, и
+// право уходит.
+//
+// Отказ на чужом аккаунте спрашивается у робота, а не у человека: другой
+// аккаунт стенда — личный аккаунт этого человека (его заводит полоса входа), и
+// владельцу там разрешено всё без всякой выдачи. Робот же в том аккаунте прав
+// не имеет, и его отказ — ровно граница выдачи.
 func TestAllInScopeAccountGrantReachesEveryRegistryOfTheAccount(t *testing.T) {
 	ctx := context.Background()
 	rc := registrar(t)
 	userID, foreignAccount, foreignProject := human(ctx, t)
-	subject := "user:" + userID
+	user := "user:" + userID
 
 	regA, regB, regC := "kioa"+run, "kiob"+run, "kioc"+run
 	repoA, repoB, repoC := "registry_repository:"+regA+"/app", "registry_repository:"+regB+"/app", "registry_repository:"+regC+"/app"
 	register(t, rc, registryOf(regA, project), repositoryOf(regA, "app", project),
 		registryOf(regC, foreignProject), repositoryOf(regC, "app", foreignProject))
-	if got, _ := allowed(t, rc, subject, "v_update", repoA); got {
-		t.Fatalf("%s already allowed v_update on %s before any grant: the probe has nothing to measure", subject, repoA)
-	}
 
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "whole-" + run, Annotations: map[string]string{
 		iamv1alpha1.AnnotationAccountID: account, iamv1alpha1.AnnotationProjectID: project,
@@ -196,32 +199,59 @@ func TestAllInScopeAccountGrantReachesEveryRegistryOfTheAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = k8s.Delete(context.Background(), ns) })
+	platform, err := as(platformUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	robotCR := &iamv1alpha1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{Name: "robot", Namespace: ns.Name},
+		Spec:       iamv1alpha1.ServiceAccountSpec{Name: "kio-it-" + run + "-whole", Description: "allInScope probe robot"},
+	}
+	if err := platform.Create(ctx, robotCR); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = k8s.Delete(context.Background(), robotCR) })
+	robotCur := &iamv1alpha1.ServiceAccount{}
+	eventually(t, func() error {
+		if err := k8s.Get(ctx, client.ObjectKeyFromObject(robotCR), robotCur); err != nil {
+			return err
+		}
+		return ready(robotCur.Status.Conditions)
+	})
+	robot := "service_account:" + robotCur.Status.ID
+	for _, sub := range []string{user, robot} {
+		if got, _ := allowed(t, rc, sub, "v_update", repoA); got {
+			t.Fatalf("%s already allowed v_update on %s before any grant: the probe has nothing to measure", sub, repoA)
+		}
+	}
+	if got, _ := allowed(t, rc, user, "v_update", repoC); !got {
+		t.Fatalf("%s is denied v_update on %s of its own account %s: the stand is not the world this probe assumes", user, repoC, foreignAccount)
+	}
 	whole := func(name, creator string) *iamv1alpha1.AccessBinding {
 		return &iamv1alpha1.AccessBinding{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns.Name,
 				Annotations: map[string]string{iamv1alpha1.AnnotationCreatedBy: creator}},
 			Spec: iamv1alpha1.AccessBindingSpec{
-				Subjects: []iamv1alpha1.Subject{{User: &iamv1alpha1.PrincipalRef{ID: userID}}},
-				RoleRef:  iamv1alpha1.RoleRef{Name: pusherRole},
-				Scope:    iamv1alpha1.Scope{Type: iamv1alpha1.ScopeAccount},
-				Target:   iamv1alpha1.Target{AllInScope: &iamv1alpha1.AllInScope{}},
+				Subjects: []iamv1alpha1.Subject{
+					{User: &iamv1alpha1.PrincipalRef{ID: userID}},
+					{ServiceAccountRef: &iamv1alpha1.LocalServiceAccountRef{Name: robotCR.Name}},
+				},
+				RoleRef: iamv1alpha1.RoleRef{Name: pusherRole},
+				Scope:   iamv1alpha1.Scope{Type: iamv1alpha1.ScopeAccount},
+				Target:  iamv1alpha1.Target{AllInScope: &iamv1alpha1.AllInScope{}},
 			},
 		}
 	}
 
 	// Писатель, не являющийся платформой (администратор envtest — писатель
 	// чарта), выдачи на всю область не ставит: отказ допуска.
-	err := k8s.Create(ctx, whole("whole-writer", envtestAdmin))
+	err = k8s.Create(ctx, whole("whole-writer", envtestAdmin))
 	// Субъект user и цель allInScope судятся одной оградой принципала
 	// платформы; какое из двух правил назовёт отказ первым — порядок сервера.
 	if err == nil || !apierrors.IsForbidden(err) || !strings.Contains(err.Error(), "only from a platform principal") {
 		t.Fatalf("allInScope from a non-platform writer: %v, want an admission denial by the platform principal rule", err)
 	}
 
-	platform, err := as(platformUser)
-	if err != nil {
-		t.Fatal(err)
-	}
 	ab := whole("whole-pusher", platformUser)
 	if err := platform.Create(ctx, ab); err != nil {
 		t.Fatalf("allInScope from the platform principal: %v", err)
@@ -243,14 +273,18 @@ func TestAllInScopeAccountGrantReachesEveryRegistryOfTheAccount(t *testing.T) {
 		t.Fatalf("kaname binding labels = %v", l)
 	}
 
-	eventuallyAllowed(t, rc, true, subject, "v_update", repoA)
+	for _, sub := range []string{user, robot} {
+		eventuallyAllowed(t, rc, true, sub, "v_update", repoA)
+	}
 	// Реестр, зарегистрированный ПОСЛЕ выдачи, покрыт той же выдачей.
 	register(t, rc, registryOf(regB, project), repositoryOf(regB, "app", project))
-	eventuallyAllowed(t, rc, true, subject, "v_update", repoB)
-	// Реестр другого аккаунта выдачей не покрыт: право материализовано на
-	// реестрах аккаунта выдачи — значит, и на этом его уже нет.
-	if got, reason := allowed(t, rc, subject, "v_update", repoC); got {
-		t.Fatalf("%s allowed v_update on %s of account %s: the grant on account %s leaked (reason %q)", subject, repoC, foreignAccount, account, reason)
+	for _, sub := range []string{user, robot} {
+		eventuallyAllowed(t, rc, true, sub, "v_update", repoB)
+	}
+	// Реестр другого аккаунта выдачей не покрыт: право робота материализовано
+	// на реестрах аккаунта выдачи — значит, и на этом его уже нет.
+	if got, reason := allowed(t, rc, robot, "v_update", repoC); got {
+		t.Fatalf("%s allowed v_update on %s of account %s: the grant on account %s leaked (reason %q)", robot, repoC, foreignAccount, account, reason)
 	}
 
 	// Удаление CR отзывает выдачу, и право уходит.
@@ -266,6 +300,18 @@ func TestAllInScopeAccountGrantReachesEveryRegistryOfTheAccount(t *testing.T) {
 	if got := binding(t, cur.Status.ID); got.GetStatus() != iamv1.AccessBinding_REVOKED {
 		t.Fatalf("binding after deletion = %s", got.GetStatus())
 	}
-	eventuallyAllowed(t, rc, false, subject, "v_update", repoA)
-	eventuallyAllowed(t, rc, false, subject, "v_update", repoB)
+	for _, sub := range []string{user, robot} {
+		eventuallyAllowed(t, rc, false, sub, "v_update", repoA)
+		eventuallyAllowed(t, rc, false, sub, "v_update", repoB)
+	}
+	// Робот снимается тем же прогоном: перепись остатков после набора.
+	if err := platform.Delete(ctx, robotCR); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() error {
+		if err := k8s.Get(ctx, client.ObjectKeyFromObject(robotCR), &iamv1alpha1.ServiceAccount{}); !apierrors.IsNotFound(err) {
+			return fmt.Errorf("robot CR still present: %w", err)
+		}
+		return nil
+	})
 }
