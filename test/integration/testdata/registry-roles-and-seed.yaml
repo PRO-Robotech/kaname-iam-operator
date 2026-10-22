@@ -1,0 +1,36 @@
+# Роли и посев модуля registry для доставки стенду kaname интеграционного
+# прогона (hack/it-deliver-registry.sh). Раздел resources манифеста к этому
+# файлу не относится: доставщик берёт его у закреплённой ревизии kaname
+# (internal/manifest/testdata/registry.public-read-fixture.yaml) — kaname на
+# старте сверяет его с каноном своего образа побайтово.
+#
+# registry.pusher — роль под пробой: правило верхнего уровня над реестрами,
+# вложенное правило children — над каждым репозиторием реестра, включая
+# заведённые позже. Выдача с целью allInScope на аккаунт покрывает этим все
+# реестры аккаунта.
+roles:
+
+  - id: registry.pusher
+    description: >
+      Публикация и чтение образов реестра, названного целью выдачи: новые
+      репозитории и запись в каждый его репозиторий.
+    tier: {tierType: iam.cluster, tierId: cluster_root}
+    rules:
+      - module: registry
+        resources: [registries]
+        classes: [get, create]
+        children:
+          - resources: [repositories]
+            classes: [get, list, update]
+
+# Личность модуля и её вступление в группу пишущих кортежи владения: ею прогон
+# регистрирует реестры и репозитории (RegisterResource на :9091).
+seed:
+  serviceAccounts:
+    - name: kacho-registry
+      account: system
+      description: "Module SA: kacho-registry (SEC-C least-priv)"
+  joins:
+    - serviceAccount: {account: system, name: kacho-registry}
+      group: {account: system, name: module-relation-writers}
+      why: "писать кортежи владения через iam, не ходя в хранилище прав напрямую"

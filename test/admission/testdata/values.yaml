@@ -1,0 +1,24 @@
+config:
+  clusterName: c1
+  kaname: {apiURL: "https://kaname.kaname.svc:9098", audience: "https://kaname.local"}
+  vault: {address: "https://vault.vault.svc:8200"}
+  policy:
+    allowedRoles: [registry.puller, registry.pusher, registry.public.read]
+    systemClassRoles: [registry.public.read]
+    platformPrincipals: ["system:serviceaccount:platform-system:onboarding"]
+    targetResolvers:
+      registry.registries:
+        group: registry.in-cloud.io
+        version: v1alpha1
+        resource: registryidreservations
+        match:
+          - {path: spec.registryRef.namespace, equals: $namespace}
+          - {path: status.phase, equals: Active}
+  delivery:
+    vault:
+      docker-registry: {mount: secret, pathTemplate: "clusters/{cluster}/namespaces/{namespace}/apps/docker-registry/{instance}/robots/{name}/{key}"}
+admission:
+  writers:
+    - system:serviceaccount:registry-system:registry-operator
+    - system:serviceaccount:argocd:argocd-application-controller
+    - system:serviceaccount:platform-system:onboarding

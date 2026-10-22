@@ -1,0 +1,16 @@
+{{- if .Values.metrics.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kio.fullname" . }}-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kio.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "kio.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: https
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
+{{- end }}

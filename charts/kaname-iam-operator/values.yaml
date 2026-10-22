@@ -1,0 +1,117 @@
+# Образ оператора.
+image:
+  repository: prorobotech/kaname-iam-operator
+  # Пусто — appVersion чарта.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Две реплики: работает только держатель Lease, вторая — горячий резерв.
+replicaCount: 2
+
+serviceAccount:
+  # Имя SA оператора. Оно же — субъект FEDERATED-входа в kaname
+  # (system:serviceaccount:<namespace>:<name>) и субъект роли Vault.
+  name: kaname-iam-operator
+  annotations: {}
+
+leaderElection:
+  enabled: true
+
+# Как часто готовый объект сверяется с kaname (дрейф).
+driftInterval: 10m
+maxConcurrentReconciles: 4
+logLevel: info
+
+# Конфигурация оператора (config.yaml). Проверяется на старте, неполная —
+# отказ старта.
+config:
+  # Имя кластера: метки владения в kaname и пути Vault. Обязательно.
+  clusterName: ""
+  kaname:
+    # Origin REST-фронта kaname. Обязателен.
+    apiURL: ""
+    # Токен-эндпоинт; пусто — apiURL + /iam/v1/token.
+    tokenURL: ""
+    # aud утверждения — идентификатор издателя kaname. Обязателен.
+    audience: ""
+    requestedAudience: ""
+    callTimeout: 10s
+    assertionTTL: 10m
+    # Сколько ждать исхода создания, чей ответ потерян (kaname заводит объект
+    # фоном): столько удаление CR не снимает финализатор при пустом поиске.
+    createGrace: 10m
+    qps: 10
+    burst: 20
+  vault:
+    # https://host[:port] Vault. Обязателен.
+    address: ""
+    authMount: kubernetes
+    role: kaname-iam-operator
+    callTimeout: 5s
+  policy:
+    allowedRoles: []
+    systemClassRoles: []
+    # Субъекты user/group принимаются от этих принципалов только при
+    # гарантии допуска: policy.admissionGuard чарт заполняет сам именами своих
+    # политик, когда admission.enabled; без допуска user/group отвергаются.
+    platformPrincipals: []
+    # тип цели -> объект k8s, подтверждающий цель в namespace CR.
+    targetResolvers: {}
+  delivery:
+    vault: {}
+  keys:
+    orphanGrace: 10m
+
+# УЦ kaname и Vault: Secret с сертификатом (пусто — системные корни).
+kanameCA:
+  secretName: ""
+  key: ca.crt
+vaultCA:
+  secretName: ""
+  key: ca.crt
+
+# Projected-токен SA для kubernetes-auth Vault.
+vaultToken:
+  audience: vault
+  expirationSeconds: 3600
+
+# Ограждение допуска (ValidatingAdmissionPolicy).
+admission:
+  enabled: true
+  # Пользователи k8s, которым разрешено создавать, менять и удалять CR
+  # (registry-operator, онбординг платформы, контроллер Argo CD).
+  writers: []
+  # Группы k8s с тем же правом (break-glass), по умолчанию — никто.
+  writerGroups: []
+  # Кто вправе только УДАЛЯТЬ CR: контроллер namespace и сборщик мусора.
+  deleters:
+    - system:serviceaccount:kube-system:namespace-controller
+    - system:serviceaccount:kube-system:generic-garbage-collector
+  # Дополнительные писатели /status (кроме самого оператора).
+  statusWriters: []
+
+metrics:
+  enabled: true
+  port: 8443
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""
