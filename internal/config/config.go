@@ -91,9 +91,19 @@ type Policy struct {
 	PlatformPrincipals []string `json:"platformPrincipals,omitempty"`
 	// AdmissionGuard — имена ValidatingAdmissionPolicy (каждая с привязкой
 	// того же имени), которые держат подлинность created-by и субъектов
-	// user/group. Оператор сверяет их наличие и режим отказа на каждой такой
-	// выдаче; пусто — user/group не принимаются.
+	// user/group. Оператор сверяет их наличие и режим отказа на каждом
+	// проходе каждой выдачи (свидетельство в status — с первого прохода),
+	// отказ запрещает выдачи user/group и allInScope; пусто — они не
+	// принимаются.
 	AdmissionGuard []string `json:"admissionGuard,omitempty"`
+	// AdmissionEnforcementDelay — срок вступления в силу версии политики
+	// допуска, увиденной оператором: kube-apiserver перечитывает политики
+	// периодически (раз в секунду), и каждый экземпляр — со своим отставанием
+	// наблюдателя. Пока срок от первой встречи с версией не истёк, её запись в
+	// свидетельстве не доказывает ни смены spec, ни значения rewitness;
+	// политика, созданная меньше чем за срок (и секунду точности отметок
+	// времени) до объекта, не считается старше него.
+	AdmissionEnforcementDelay Duration `json:"admissionEnforcementDelay,omitempty"`
 	// TargetResolvers — как тип цели разрешается в объект namespace CR.
 	TargetResolvers map[string]TargetResolver `json:"targetResolvers,omitempty"`
 }
@@ -171,15 +181,24 @@ const (
 	minAssertionTTL = 10 * time.Minute
 	// maxAssertionTTL — потолок длительности федеративного утверждения kaname
 	// (tokenpolicy.MaxFederatedAssertionLifetime).
-	maxAssertionTTL      = time.Hour
-	defaultAssertionTTL  = minAssertionTTL
-	defaultOrphanGrace   = 10 * time.Minute
-	defaultCreateGrace   = 10 * time.Minute
-	minCreateGrace       = time.Minute
-	minOrphanGrace       = time.Minute
-	defaultQPS           = 10
-	defaultBurst         = 20
-	defaultTokenEndpoint = "/iam/v1/token"
+	maxAssertionTTL     = time.Hour
+	defaultAssertionTTL = minAssertionTTL
+	defaultOrphanGrace  = 10 * time.Minute
+	defaultCreateGrace  = 10 * time.Minute
+	// defaultAdmissionEnforcementDelay — интервал перечитывания политик
+	// kube-apiserver (1 с, policyRefreshIntervalDefault в
+	// k8s.io/apiserver/pkg/admission/plugin/policy/generic) с запасом на
+	// отставание наблюдателей нескольких экземпляров и расхождение часов
+	// реплик оператора при смене лидера.
+	defaultAdmissionEnforcementDelay = 10 * time.Second
+	// minAdmissionEnforcementDelay — сам интервал перечитывания: короче
+	// срок не держит и одного экземпляра kube-apiserver.
+	minAdmissionEnforcementDelay = time.Second
+	minCreateGrace               = time.Minute
+	minOrphanGrace               = time.Minute
+	defaultQPS                   = 10
+	defaultBurst                 = 20
+	defaultTokenEndpoint         = "/iam/v1/token"
 )
 
 var (
@@ -249,6 +268,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Keys.OrphanGrace.Duration == 0 {
 		c.Keys.OrphanGrace.Duration = defaultOrphanGrace
+	}
+	if c.Policy.AdmissionEnforcementDelay.Duration == 0 {
+		c.Policy.AdmissionEnforcementDelay.Duration = defaultAdmissionEnforcementDelay
 	}
 }
 
@@ -324,6 +346,9 @@ func (p *Policy) validate() []error {
 		if !dnsSubdomainRe.MatchString(n) || len(n) > 253 {
 			errs = append(errs, fmt.Errorf("policy.admissionGuard: %q is not an object name", n))
 		}
+	}
+	if d := p.AdmissionEnforcementDelay.Duration; d < minAdmissionEnforcementDelay {
+		errs = append(errs, fmt.Errorf("policy.admissionEnforcementDelay %s must be at least %s, the kube-apiserver policy refresh interval", d, minAdmissionEnforcementDelay))
 	}
 	for typ, r := range p.TargetResolvers {
 		where := fmt.Sprintf("policy.targetResolvers[%q]", typ)

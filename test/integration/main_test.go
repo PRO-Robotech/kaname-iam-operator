@@ -57,8 +57,10 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/clock"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	crconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -67,6 +69,7 @@ import (
 	"github.com/PRO-Robotech/kaname-iam-operator/internal/config"
 	"github.com/PRO-Robotech/kaname-iam-operator/internal/controller"
 	"github.com/PRO-Robotech/kaname-iam-operator/internal/kaname"
+	"github.com/PRO-Robotech/kaname-iam-operator/internal/policy"
 	"github.com/PRO-Robotech/kaname-iam-operator/internal/vault"
 )
 
@@ -111,6 +114,14 @@ var (
 	vaultAPI *vaultAdmin
 	scheme   = runtime.NewScheme()
 	cleanups []func()
+	// testSeal — печать свидетельства допуска оператора проб.
+	testSeal = func() *policy.WitnessSeal {
+		s, err := policy.NewWitnessSeal(bytes.Repeat([]byte{7}, policy.WitnessKeyBytes))
+		if err != nil {
+			panic(err)
+		}
+		return s
+	}()
 )
 
 func TestMain(m *testing.M) {
@@ -494,6 +505,7 @@ policy:
   allowedRoles: [%s, %s]
   platformPrincipals: [%s]
   admissionGuard: [%s]
+  admissionEnforcementDelay: %s
   targetResolvers:
     %s:
       group: registry.in-cloud.io
@@ -508,31 +520,93 @@ delivery:
       mount: %s
       pathTemplate: clusters/{cluster}/namespaces/{namespace}/apps/docker-registry/{instance}/robots/{name}/{key}
 `, cluster, env["KIO_IT_KANAME_REST_URL"], env["KIO_IT_ASSERTION_AUDIENCE"], vaultAPI.addr, vaultRole,
-		env["KIO_IT_ROLE"], pusherRole, platformUser, strings.Join(guardNames, ", "), env["KIO_IT_TARGET_TYPE"], vaultMount)))
+		env["KIO_IT_ROLE"], pusherRole, platformUser, strings.Join(guardNames, ", "), itEnforcementDelay, env["KIO_IT_TARGET_TYPE"], vaultMount)))
 	if err != nil {
 		return notExecuted("config: %v", err)
 	}
-	mgr, err := ctrl.NewManager(restCfg, ctrl.Options{Scheme: scheme, Metrics: metricsserver.Options{BindAddress: "0"}})
+	baseCfg = cfg
+	stop, err := runOperator(ctx, cfg)
 	if err != nil {
-		return notExecuted("manager: %v", err)
+		return notExecuted("%v", err)
+	}
+	stopOperator = stop
+	cleanups = append(cleanups, func() { stopOperator() })
+	time.Sleep(time.Until(admissionInstalled.Add(itEnforcementDelay + time.Second + 100*time.Millisecond)))
+	return 0
+}
+
+// baseCfg — конфигурация оператора прогона; stopOperator — остановка
+// идущего менеджера.
+var (
+	baseCfg      *config.Config
+	stopOperator = func() {}
+)
+
+// runOperator поднимает менеджер оператора по cfg; stop останавливает его и
+// ждёт, пока проходы допишут.
+func runOperator(ctx context.Context, cfg *config.Config) (stop func(), err error) {
+	// Имена контроллеров у перезапущенного менеджера те же, что у прежнего.
+	mgr, err := ctrl.NewManager(restCfg, ctrl.Options{Scheme: scheme, Metrics: metricsserver.Options{BindAddress: "0"},
+		Controller: crconfig.Controller{SkipNameValidation: ptr.To(true)}})
+	if err != nil {
+		return nil, fmt.Errorf("manager: %w", err)
 	}
 	deps := &controller.Deps{
 		Kaname: opClient, Vault: vaultCli, Config: cfg, Recorder: &events.FakeRecorder{},
-		Clock: clock.RealClock{}, DriftInterval: 2 * time.Second, MaxConcurrentReconciles: 2,
+		Clock: clock.RealClock{}, DriftInterval: 2 * time.Second, MaxConcurrentReconciles: 2, Seal: testSeal,
 	}
 	mctx, cancel := context.WithCancel(ctx)
-	cleanups = append(cleanups, cancel)
 	if err := controller.SetupIndexes(mctx, mgr); err != nil {
-		return notExecuted("indexes: %v", err)
+		cancel()
+		return nil, fmt.Errorf("indexes: %w", err)
 	}
 	if err := controller.SetupServiceAccountReconciler(mgr, deps); err != nil {
-		return notExecuted("sa: %v", err)
+		cancel()
+		return nil, fmt.Errorf("sa: %w", err)
 	}
 	if err := controller.SetupAccessBindingReconciler(mgr, deps); err != nil {
-		return notExecuted("ab: %v", err)
+		cancel()
+		return nil, fmt.Errorf("ab: %w", err)
 	}
-	go func() { _ = mgr.Start(mctx) }()
-	return 0
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = mgr.Start(mctx)
+	}()
+	return func() { cancel(); <-done }, nil
+}
+
+// restartOperator перезапускает оператор с политикой прогона, правленной
+// mutate (nil — сама политика прогона; mutate присваивает новые срезы), —
+// так развёрнутый оператор видит смену конфигурации: контрольная сумма
+// конфигурации в шаблоне пода перезапускает под. В конце пробы оператор
+// возвращается к политике прогона.
+func restartOperator(t *testing.T, mutate func(*config.Policy)) {
+	t.Helper()
+	cfg := baseCfg
+	if mutate != nil {
+		c := *baseCfg
+		mutate(&c.Policy)
+		cfg = &c
+	}
+	swap := func(cfg *config.Config) error {
+		stopOperator()
+		stop, err := runOperator(context.Background(), cfg)
+		if err != nil {
+			stopOperator = func() {}
+			return err
+		}
+		stopOperator = stop
+		return nil
+	}
+	if err := swap(cfg); err != nil {
+		t.Fatalf("restart operator: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := swap(baseCfg); err != nil {
+			t.Errorf("restore the operator policy: %v", err)
+		}
+	})
 }
 
 // census — перепись остатков прогона в kaname и Vault: учёток с префиксом

@@ -61,8 +61,13 @@ spec:
             properties:
               deletionPolicy:
                 default: Delete
-                description: DeletionPolicy — что делать с выдачей kaname при удалении
-                  CR.
+                description: |-
+                  DeletionPolicy — что делать с выдачей kaname при удалении CR. Orphan
+                  касается только удаления и только допустимой выдачи: выдачу, ставшую
+                  недопустимой политикой оператора (Rejected/PolicyNarrowed, в том числе
+                  без гарантии допуска либо с целью из чужого namespace), оператор
+                  отзывает при любой политике удаления — и при удалении CR с Orphan,
+                  повторяя отзыв до успеха.
                 enum:
                 - Delete
                 - Orphan
@@ -232,6 +237,100 @@ spec:
           status:
             description: AccessBindingStatus — наблюдаемое состояние выдачи.
             properties:
+              admissionWitness:
+                description: |-
+                  AdmissionWitness — политики допуска, увиденные оператором, по записи
+                  на политику: ими гарантия допуска судится на последнюю смену spec.
+                properties:
+                  confirmedCreatedBy:
+                    description: |-
+                      ConfirmedCreatedBy — значение аннотации created-by при том
+                      подтверждении: другое значение подтверждением не покрыто.
+                    type: string
+                  confirmedGeneration:
+                    description: |-
+                      ConfirmedGeneration — поколение spec, для которого проход оператора
+                      подтвердил гарантию: каждая политика стояла, отказывала и доказывала
+                      это поколение. Правка политик на месте (смена values чарта растит их
+                      metadata.generation) выдачу этого поколения не отзывает: spec записан
+                      при прежней, уже действовавшей версии. Снимается переустановкой
+                      политики (новый uid), её снятием и отказом: выдачу после них заново
+                      подтверждает смена spec при стоящих политиках либо rewitness платформы.
+                      0 — подтверждения нет.
+                    format: int64
+                    type: integer
+                  policies:
+                    description: |-
+                      Policies — увиденные политики и их привязки, по записи на политику.
+                      Смена состава policy.admissionGuard записи прочих политик не трогает.
+                    items:
+                      description: |-
+                        AdmissionPolicyUIDs — увиденные uid и поколения политики допуска и её
+                        привязки с тем же именем.
+                      properties:
+                        bindingGeneration:
+                          description: BindingGeneration — metadata.generation привязки,
+                            когда она увидена.
+                          format: int64
+                          type: integer
+                        bindingUID:
+                          description: BindingUID — uid ValidatingAdmissionPolicyBinding.
+                          type: string
+                        generation:
+                          description: |-
+                            Generation — поколение spec объекта, при котором политика с этими uid и
+                            поколениями увидена в силе (первым проходом после срока вступления в
+                            силу): запись доказывает смены spec ПОСЛЕ него.
+                            0 — политика старше самого объекта либо засвидетельствована платформой
+                            (аннотация rewitness): запись доказывает любое поколение spec.
+                          format: int64
+                          type: integer
+                        name:
+                          description: Name — имя политики и привязки.
+                          type: string
+                        pendingSince:
+                          description: |-
+                            PendingSince — когда оператор впервые увидел эту версию политики и
+                            привязки, если срок вступления в силу (policy.admissionEnforcementDelay)
+                            от того момента ещё не истёк при записи. kube-apiserver перечитывает
+                            политики периодически: увиденная оператором версия ещё могла не
+                            исполняться, и такая запись не доказывает ни одного поколения spec.
+                            Снимается первым проходом после срока; Generation он ставит текущим.
+                          format: date-time
+                          type: string
+                        policyGeneration:
+                          description: PolicyGeneration — metadata.generation политики,
+                            когда она увидена.
+                          format: int64
+                          type: integer
+                        policyUID:
+                          description: PolicyUID — uid ValidatingAdmissionPolicy.
+                          type: string
+                      required:
+                      - bindingUID
+                      - name
+                      - policyUID
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  rewitnessNonce:
+                    description: |-
+                      RewitnessNonce — значение аннотации rewitness, уже учтённое оператором
+                      (исполненное либо отклонённое). Записывается вместе с политиками:
+                      новое значение аннотации поставлено после этой записи.
+                    type: string
+                  seal:
+                    description: |-
+                      Seal — печать оператора: HMAC-SHA256 по uid объекта и всему
+                      свидетельству на ключе из Secret в namespace оператора. Свидетельство
+                      без верной печати (записанное не оператором либо при другом ключе)
+                      оператор читает как отсутствие свидетельства.
+                    type: string
+                required:
+                - policies
+                type: object
               bindingHash:
                 description: |-
                   BindingHash — отпечаток (субъекты, роль, область, цель, срок) действующей
@@ -239,7 +338,7 @@ spec:
                 type: string
               conditions:
                 description: Conditions — Ready, Synced, Conflict, SubjectPending,
-                  Drifted.
+                  Drifted, Rejected.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

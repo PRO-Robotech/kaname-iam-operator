@@ -112,10 +112,10 @@ INJ = [
   "\t\t\t\tif r.GetName() == name && r.GetIsSystem() {", "\t\t\t\tif r.GetName() == name {",
   "./internal/kaname/", "TestFindRoleAcceptsOnlySystemRoles"),
  ("I24 admission guarantee not checked", "internal/controller/accessbinding_controller.go",
-  "\tif policy.NeedsAdmissionGuarantee(ab) {", "\tif policy.NeedsAdmissionGuarantee(ab) && false {",
+  "\t\tif refused == nil && g.Violation != nil && needs {", "\t\tif refused == nil && g.Violation != nil && needs && false {",
   "./internal/controller/", "TestABUserSubjectIsRefusedWithoutTheAdmissionGuarantee"),
  ("I25 admission binding mode not checked", "internal/policy/admission.go",
-  "\t\tcase !slices.Contains(bnd.Spec.ValidationActions, admissionv1.Deny):", "\t\tcase false:",
+  "\tcase !slices.Contains(bnd.Spec.ValidationActions, admissionv1.Deny):", "\tcase false:",
   "./internal/policy/", "TestAdmissionGuaranteeHoldsOnlyWhenEveryFactHolds"),
  ("I26 foreign Vault record overwritten", "internal/controller/serviceaccount_keys.go",
   "\tif rec != nil && !p.ownsRecord(rec, spec.Name) {", "\tif rec != nil && false {",
@@ -152,10 +152,142 @@ INJ = [
  ("I37 chart judges finalizer changes as grants", "charts/kaname-iam-operator/templates/admission.yaml",
   "request.operation == 'CREATE' || object.spec != oldObject.spec", "true",
   "./test/admission/", "TestOperatorFinalizesPlatformOnlyBindings"),
+ # Сужение политики: выдача, ставшая недопустимой, отзывается; гарантия
+ # допуска судится на последнюю смену spec по свидетельству политик.
+ ("I39 narrowed binding kept in kaname", "internal/controller/accessbinding_controller.go",
+  "\tif !p.holds() {\n\t\tif !narrowed {", "\tif true {\n\t\tif !narrowed {",
+  "./internal/controller/", "TestABNarrowedPlatformPrincipalsWithdrawUserGroupAndAllInScope|TestABNarrowedAllowedRolesWithdrawTheBinding"),
+ ("I40 admission witness ignored", "internal/policy/admission.go",
+  "\t\tif prev.Generation >= s.gen {", "\t\tif true {",
+  "./internal/policy/", "TestAdmissionGuaranteeIsJudgedAtTheLastSpecChange"),
+ ("I41 witness of the current generation accepted", "internal/policy/admission.go",
+  "\t\tif prev.Generation >= s.gen {", "\t\tif prev.Generation > s.gen {",
+  "./internal/policy/", "TestAdmissionGuaranteeIsJudgedAtTheLastSpecChange"),
+ ("I42 reinstalled policy accepted by name", "internal/policy/admission.go",
+  "rec.PolicyUID != \"\" && rec.PolicyUID == live.PolicyUID &&", "rec.PolicyUID != \"\" &&",
+  "./internal/policy/", "TestAdmissionGuaranteeIsJudgedAtTheLastSpecChange"),
+ # Второй круг: свидетельство по каждой политике и по её поколению,
+ # засвидетельствование платформой, цель из чужого namespace, Orphan
+ # запрещённой выдачи, запись свидетельства с проверкой версии.
+ ("I44 policy changed in place accepted", "internal/policy/admission.go",
+  "rec.PolicyUID == live.PolicyUID && rec.PolicyGeneration == live.PolicyGeneration &&", "rec.PolicyUID == live.PolicyUID &&",
+  "./internal/policy/ ./internal/controller/", "TestAdmissionGuaranteeIsJudgedAtTheLastSpecChange|TestABAdmissionPolicyChangedInPlaceKeepsTheConfirmedBinding"),
+ ("I45 witness record re-dated on every pass", "internal/policy/admission.go",
+  "\t\tlive.Generation = prev.Generation\n", "",
+  "./internal/policy/ ./internal/controller/", "TestAdmissionGuaranteeKeepsEachPolicyWitness|TestABAdmissionGuardGrowingKeepsALawfulBinding"),
+ ("I46 records of policies left out of the guard dropped", "internal/policy/admission.go",
+  "\t\tif !slices.Contains(names, rec.Name) {\n\t\t\tnext = append(next, rec)", "\t\tif false {\n\t\t\tnext = append(next, rec)",
+  "./internal/policy/", "TestAdmissionGuaranteeKeepsEachPolicyWitness"),
+ ("I47 rewitness honoured before the policies were seen", "internal/policy/admission.go",
+  "if nonce != \"\" && sw.inForce && bad == nil {", "if nonce != \"\" && (sw.inForce || true) && bad == nil {",
+  "./internal/policy/ ./internal/controller/", "TestAdmissionGuaranteeRewitnessByThePlatform|TestABReinstalledGuardWithdrawsAndThePlatformRewitnessRestores"),
+ ("I48 rewitness never honoured", "internal/policy/admission.go",
+  "\t\t\tg.Rewitnessed, late = true, nil\n", "\t\t\tg.Rewitnessed = true\n",
+  "./internal/policy/ ./internal/controller/", "TestAdmissionGuaranteeRewitnessByThePlatform|TestABReinstalledGuardWithdrawsAndThePlatformRewitnessRestores"),
+ ("I49 guarantee loss reported as a narrowing", "internal/controller/accessbinding_controller.go",
+  "\tif v.Admission {\n\t\treason = iamv1alpha1.ReasonAdmissionGuaranteeLost", "\tif false {\n\t\treason = iamv1alpha1.ReasonAdmissionGuaranteeLost",
+  "./internal/controller/", "TestABReinstalledGuardWithdrawsAndThePlatformRewitnessRestores|TestABAdmissionPolicyChangedInPlaceKeepsTheConfirmedBinding"),
+ ("I50 target of another namespace only refused", "internal/controller/accessbinding_controller.go",
+  "\tif v != nil && v.Reason == iamv1alpha1.ReasonForbidden {\n\t\treturn v, nil, nil", "\tif false {\n\t\treturn v, nil, nil",
+  "./internal/controller/", "TestABTargetMovedToAnotherNamespaceIsWithdrawn"),
+ ("I51 pending target masks a foreign one", "internal/policy/policy.go",
+  "\t\tcase v.Reason == iamv1alpha1.ReasonForbidden:\n\t\t\treturn v, nil", "\t\tcase v.Reason == iamv1alpha1.ReasonForbidden && pending == nil:\n\t\t\treturn v, nil",
+  "./internal/policy/", "TestResolveTargets"),
+ ("I52 Orphan keeps a forbidden binding", "internal/controller/accessbinding_controller.go",
+  "\t\tif forbid == nil && !p.narrowed() {\n\t\t\treturn p.removeFinalizer(ctx)", "\t\tif true {\n\t\t\treturn p.removeFinalizer(ctx)",
+  "./internal/controller/", "TestABOrphanDeletionWithdrawsAForbiddenBinding"),
+ # Orphan держат двое: запрет, увиденный сверкой на удалении (unseen), и
+ # уже начатый отзыв (lost: на удалении поколение растёт, и гарантия сверкой
+ # не отказывает). Каждый держатель снимается отдельно.
+ ("I53 Orphan judged by the withdrawal already started only", "internal/controller/accessbinding_controller.go",
+  "\t\tif forbid == nil && !p.narrowed() {\n\t\t\treturn p.removeFinalizer(ctx)", "\t\tif !p.narrowed() {\n\t\t\treturn p.removeFinalizer(ctx)",
+  "./internal/controller/", "TestABOrphanDeletionWithdrawsAForbiddenBinding"),
+ ("I54 Orphan judged by the policy seen at deletion only", "internal/controller/accessbinding_controller.go",
+  "\t\tif forbid == nil && !p.narrowed() {\n\t\t\treturn p.removeFinalizer(ctx)", "\t\tif forbid == nil {\n\t\t\treturn p.removeFinalizer(ctx)",
+  "./internal/controller/", "TestABOrphanDeletionWithdrawsAForbiddenBinding"),
+ ("I55 status written without the resourceVersion check", "internal/controller/accessbinding_controller.go",
+  "\tif err := p.r.Status().Update(ctx, p.ab); err != nil {",
+  "\tfrom := p.ab.DeepCopy()\n\tfrom.Status = *p.saved\n\tif err := p.r.Status().Patch(ctx, p.ab, client.MergeFrom(from)); err != nil {",
+  "./internal/controller/", "TestABWitnessWriteLosesToAConcurrentSpecChange"),
+ ("I56 chart admits rewitness from any writer", "charts/kaname-iam-operator/templates/admission.yaml",
+  "(variables.annotations[?'iam.kaname.in-cloud.io/rewitness'].orValue('') == variables.oldAnnotations[?'iam.kaname.in-cloud.io/rewitness'].orValue('')) ||",
+  "true ||",
+  "./test/admission/", "TestRewitnessAnnotationOnlyFromThePlatform"),
+ # Третий круг: подтверждение гарантии переживает правку политик на месте
+ # (смену values чарта) — для того же spec и created-by и не дольше
+ # переустановки; версия политики вступает в силу по истечении срока, и
+ # старшинство политики над объектом судится с тем же сроком; свидетельство —
+ # с первого прохода, отказ — только выдачам, которым гарантия нужна; Orphan
+ # с неразрешимым типом цели завершается.
+ ("I57 confirmation ignored: an in-place change revokes a confirmed binding", "internal/policy/admission.go",
+  "\tif late != nil && confirmedGen != 0 && confirmedGen == sw.gen && confirmedBy == createdBy {", "\tif false {",
+  "./internal/policy/ ./test/admission/ ./internal/controller/",
+  "TestAdmissionGuaranteeConfirmedSpecSurvivesAnInPlaceChange|TestChartValuesUpgradeKeepsAPermissibleBinding|TestABAdmissionPolicyChangedInPlaceKeepsTheConfirmedBinding"),
+ ("I58 confirmation not tied to created-by", "internal/policy/admission.go",
+  "confirmedGen == sw.gen && confirmedBy == createdBy {", "confirmedGen == sw.gen {",
+  "./internal/policy/", "TestAdmissionGuaranteeConfirmedSpecSurvivesAnInPlaceChange"),
+ ("I59 confirmation survives a reinstall", "internal/policy/admission.go",
+  "\tif sw.reinstalled || bad != nil {\n\t\tconfirmedGen, confirmedBy = 0, \"\"", "\tif bad != nil {\n\t\tconfirmedGen, confirmedBy = 0, \"\"",
+  "./internal/policy/", "TestAdmissionGuaranteeConfirmedSpecSurvivesAnInPlaceChange"),
+ ("I60 a seen version trusted before it takes effect", "internal/policy/admission.go",
+  "\tcase seen && sameVersion(prev, live) && prev.PendingSince != nil:", "\tcase seen && sameVersion(prev, live) && prev.PendingSince != nil && false:",
+  "./internal/policy/ ./internal/controller/", "TestAdmissionGuaranteeWaitsUntilThePolicyTakesEffect|TestABReinstalledGuardWithdrawsAndThePlatformRewitnessRestores"),
+ ("I61 a seen version never takes effect", "internal/policy/admission.go",
+  "\t\tif since := prev.PendingSince.Time; s.now.Before(since.Add(s.delay)) {", "\t\tif since := prev.PendingSince.Time; true || s.now.Before(since.Add(s.delay)) {",
+  "./internal/policy/", "TestAdmissionGuaranteeWaitsUntilThePolicyTakesEffect"),
+ ("I62 policy age judged without the enforcement delay", "internal/policy/admission.go",
+  "\treturn object.Sub(policy) >= delay+time.Second", "\treturn !policy.After(object)",
+  "./internal/policy/", "TestAdmissionGuaranteeWaitsUntilThePolicyTakesEffect"),
+ ("I63 witness only for bindings that need the guarantee", "internal/controller/accessbinding_controller.go",
+  "needs || len(p.r.Config.Policy.AdmissionGuard) > 0 {", "needs {",
+  "./internal/controller/", "TestABWitnessIsKeptBeforeTheBindingNeedsTheGuarantee"),
+ ("I64 guarantee refusal counted for every binding", "internal/controller/accessbinding_controller.go",
+  "\t\tif refused == nil && g.Violation != nil && needs {", "\t\tif refused == nil && g.Violation != nil {",
+  "./internal/controller/", "TestABCreatesTheBindingInKaname"),
+ ("I65 Orphan with an unresolvable target type waits forever", "internal/controller/accessbinding_controller.go",
+  "\t\tcase meta.IsNoMatchError(err):", "\t\tcase meta.IsNoMatchError(err) && false:",
+  "./internal/controller/", "TestABOrphanDeletionWithAnUnresolvableTargetTypeCompletes"),
+ ("I66 enforcement delay below the refresh interval accepted", "internal/config/config.go",
+  "\tif d := p.AdmissionEnforcementDelay.Duration; d < minAdmissionEnforcementDelay {", "\tif d := p.AdmissionEnforcementDelay.Duration; d < 0 {",
+  "./internal/config/", "TestParseRefusesEachBrokenFact"),
+ # Четвёртый круг: доверие свидетельству держит печать оператора, а не
+ # status (его пишет не только оператор, пока политика status не в силе);
+ # отметка первой встречи округляется вверх до точности хранения; отказ
+ # политики оператора свидетельство не пропускает.
+ ("I67 witness in status trusted without the operator's seal", "internal/policy/admission.go",
+  "\tdistrusted := w != nil && !seal.verify(ab.UID, w)", "\tdistrusted := false",
+  "./internal/policy/", "TestAdmissionGuaranteeTrustsOnlyTheWitnessTheOperatorWrote"),
+ ("I68 seal not bound to the object", "internal/policy/seal.go",
+  "\tput(string(uid))\n", "\tput(\"\")\n",
+  "./internal/policy/", "TestWitnessSealCoversEveryFieldAndTheObject|TestAdmissionGuaranteeTrustsOnlyTheWitnessTheOperatorWrote"),
+ ("I69 pendingSince outside the seal", "internal/policy/seal.go",
+  "\t\t\tput(r.PendingSince.UTC().Format(time.RFC3339))", "\t\t\tput(r.PendingSince.UTC().Format(time.RFC3339)[:0])",
+  "./internal/policy/", "TestWitnessSealCoversEveryFieldAndTheObject"),
+ ("I70 first sight mark rounded down", "internal/policy/admission.go",
+  "\tif t.Before(now) {\n\t\tt = t.Add(time.Second)\n\t}\n", "",
+  "./internal/policy/", "TestAdmissionGuaranteeCountsTheDelayFromTheActualSight"),
+ ("I71 a binding the operator policy refuses keeps no witness", "internal/controller/accessbinding_controller.go",
+  "\trefused := policy.Evaluate(p.r.Config.Policy, ab)\n", "\trefused := policy.Evaluate(p.r.Config.Policy, ab)\n\tif refused != nil {\n\t\treturn refused, nil, nil\n\t}\n",
+  "./internal/controller/", "TestABWitnessIsKeptForABindingThePolicyRefuses"),
+ ("I43 status policy left out of the admission guarantee", "charts/kaname-iam-operator/templates/_helpers.tpl",
+  " (printf \"%s-status\" (include \"kio.fullname\" .))", "",
+  "./test/admission/", "TestChartAdmissionGuardIsSatisfiedByItsOwnPolicies"),
  ("I38 CRD accepts both or neither target arm", "config/crd/bases/iam.kaname.in-cloud.io_accessbindings.yaml",
   "rule: has(self.resources) != has(self.allInScope)", "rule: \"true\"",
   "./api/v1alpha1/", "TestAccessBindingCreateRefusalsAndTwins|TestAccessBindingImmutableFieldsAndMutableTarget"),
 ]
+
+
+def go_vet(path, pkgs):
+    """go vet инъецированного дерева: пакет правленого файла и пакеты пробы.
+    Инъекция, после которой дерево не собирается, судит не продукт, а
+    компилятор: такая — находка NOT-COMPILED, а не красное."""
+    if not path.endswith(".go"):
+        return 0, ""
+    targets = ["./" + os.path.dirname(path) + "/"] + [p for p in pkgs.split() if p != "./" + os.path.dirname(path) + "/"]
+    # unreachable снят: инъекция законно роняет ветвь ранним return.
+    r = subprocess.run(["go", "vet", "-unreachable=false", *targets], cwd=ROOT, capture_output=True, text=True, timeout=900)
+    return r.returncode, (r.stdout + r.stderr).strip()
 
 
 def go_test(pkgs, run):
@@ -190,6 +322,11 @@ def main():
             continue
         open(p, "w").write(injected)
         try:
+            vrc, vout = go_vet(path, pkgs)
+            if vrc != 0:
+                print(f"{name}\tGREEN\tNOT-COMPILED\t{vout.splitlines()[-1][:200] if vout else vrc}")
+                findings += 1
+                continue
             rc, lines, out = go_test(pkgs, run)
         finally:
             open(p, "w").write(src)

@@ -116,6 +116,11 @@ func (r *AccessBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 	res, err := p.reconcile(ctx)
 	ab.Status.ObservedGeneration = ab.Generation
+	// Увиденная версия политики допуска вступает в силу по истечении срока:
+	// проход в этот момент закрепляет её запись в свидетельстве.
+	if err == nil && p.recheck > 0 && (res.RequeueAfter == 0 || p.recheck < res.RequeueAfter) {
+		res.RequeueAfter = p.recheck
+	}
 	return p.finish(ctx, res, err)
 }
 
@@ -124,6 +129,9 @@ type abPass struct {
 	ab        *iamv1alpha1.AccessBinding
 	saved     *iamv1alpha1.AccessBindingStatus
 	resyncNow bool
+	// recheck — через сколько вступает в силу ближайшая увиденная версия
+	// политики допуска (Guarantee.RecheckAfter); 0 — ждать нечего.
+	recheck time.Duration
 }
 
 func (p *abPass) now() time.Time { return p.r.now() }
@@ -185,6 +193,73 @@ func (p *abPass) refuse(v *policy.Violation) (ctrl.Result, error) {
 	return ctrl.Result{RequeueAfter: pendingRecheck}, nil
 }
 
+// reject — выдача запрещена политикой оператора (в том числе целью из чужого
+// namespace) либо не имеет гарантии допуска. Объект, который ничего не держит
+// в kaname, отвергается без вызовов (refuse). Объект, который держит выдачу
+// либо мог её завести (holds), её отзывает — тем же порядком, что удаление CR
+// (withdraw), по одному изменяющему вызову за проход, — и вновь не заводит,
+// пока выдача не станет допустимой: Rejected/PolicyNarrowed. Начало отзыва
+// сообщается событием и счётчиком отзывов с причиной: PolicyNarrowed —
+// сужение, AdmissionGuaranteeLost — потеря гарантии допуска (переустановка
+// либо правка политик отзывает выдачи массово, и это видно одной метрикой).
+// Политика удаления здесь не действует: выдача, запрещённая политикой
+// оператора, не действует ни при какой.
+func (p *abPass) reject(ctx context.Context, v *policy.Violation) (ctrl.Result, error) {
+	narrowed := p.narrowed()
+	if !p.holds() {
+		if !narrowed {
+			p.cond(iamv1alpha1.ConditionRejected, metav1.ConditionTrue, v.Reason, v.Message)
+			return p.refuse(v)
+		}
+		p.withdrawn(v)
+		return ctrl.Result{RequeueAfter: invalidRecheck}, nil
+	}
+	if !narrowed {
+		p.announceWithdrawal(v, "withdrawing the kaname binding, it is no longer permitted")
+	}
+	p.cond(iamv1alpha1.ConditionRejected, metav1.ConditionTrue, iamv1alpha1.ReasonPolicyNarrowed, v.Message)
+	p.cond(iamv1alpha1.ConditionSynced, metav1.ConditionFalse, iamv1alpha1.ReasonPolicyNarrowed, v.Message)
+	res, err, done := p.withdraw(ctx)
+	if !done {
+		return res, err
+	}
+	// Держать больше нечего: без Resolved следующие проходы kaname не зовут.
+	p.ab.Status.Resolved = nil
+	p.withdrawn(v)
+	return ctrl.Result{RequeueAfter: invalidRecheck}, nil
+}
+
+// announceWithdrawal — событие и счётчик начала отзыва выдачи v.
+func (p *abPass) announceWithdrawal(v *policy.Violation, what string) {
+	reason := iamv1alpha1.ReasonPolicyNarrowed
+	if v.Admission {
+		reason = iamv1alpha1.ReasonAdmissionGuaranteeLost
+	}
+	metrics.Withdrawals.WithLabelValues(reason).Inc()
+	p.r.Recorder.Eventf(p.ab, nil, corev1.EventTypeWarning, reason, "Reconcile", "%s: %s", what, v.Message)
+}
+
+// withdrawn — условия объекта, чья выдача отозвана по политике.
+func (p *abPass) withdrawn(v *policy.Violation) {
+	p.cond(iamv1alpha1.ConditionRejected, metav1.ConditionTrue, iamv1alpha1.ReasonPolicyNarrowed, v.Message)
+	p.cond(iamv1alpha1.ConditionSynced, metav1.ConditionFalse, iamv1alpha1.ReasonPolicyNarrowed, v.Message)
+	p.notReady(iamv1alpha1.ReasonPolicyNarrowed, "the kaname binding is withdrawn: "+v.Message)
+}
+
+// narrowed — отозвана (отзывается) ли уже выдача объекта по политике.
+func (p *abPass) narrowed() bool {
+	c := findCondition(p.ab.Status.Conditions, iamv1alpha1.ConditionRejected)
+	return c != nil && c.Status == metav1.ConditionTrue && c.Reason == iamv1alpha1.ReasonPolicyNarrowed
+}
+
+// holds — держит ли объект выдачу в kaname либо мог её завести: id
+// действующей, прежняя замена, незавершённая операция, намерение создания
+// либо Resolved — его пишут намерение до вызова Create и усыновление.
+func (p *abPass) holds() bool {
+	st := &p.ab.Status
+	return st.ID != "" || st.Replaced != nil || st.PendingOperation != nil || st.PendingHash != "" || st.Resolved != nil
+}
+
 // conflict — в kaname уже есть чужая выдача (без меток владения этого CR).
 func (p *abPass) conflict(msg string) (ctrl.Result, error) {
 	reason := iamv1alpha1.ReasonNotOwned
@@ -230,6 +305,16 @@ type desired struct {
 
 func (p *abPass) reconcile(ctx context.Context) (ctrl.Result, error) {
 	ab, st := p.ab, &p.ab.Status
+	// Политика судит выдачу на каждом проходе и раньше области: выдача,
+	// ставшая недопустимой, отзывается и тогда, когда область не разрешается.
+	forbid, pending, err := p.judge(ctx)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if forbid != nil {
+		return p.reject(ctx, forbid)
+	}
+	p.cond(iamv1alpha1.ConditionRejected, metav1.ConditionFalse, iamv1alpha1.ReasonPolicySatisfied, "")
 	ns := &corev1.Namespace{}
 	if err := p.r.Get(ctx, client.ObjectKey{Name: ab.Namespace}, ns); err != nil {
 		return ctrl.Result{}, err
@@ -245,26 +330,8 @@ func (p *abPass) reconcile(ctx context.Context) (ctrl.Result, error) {
 			ab.Namespace, iamv1alpha1.AnnotationAccountID, ann))
 		return ctrl.Result{}, nil
 	}
-	if v := policy.Evaluate(p.r.Config.Policy, ab); v != nil {
-		return p.refuse(v)
-	}
-	if policy.NeedsAdmissionGuarantee(ab) {
-		v, err := policy.CheckAdmissionGuarantee(ctx, p.r.Reader, p.r.Config.Policy.AdmissionGuard, ab.CreationTimestamp.Time)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		if v != nil {
-			return p.refuse(v)
-		}
-	}
-	// Цель «вся область» объекта namespace не называет: подтверждать нечего,
-	// её пределы — область выдачи из аннотаций namespace.
-	v, err := policy.ResolveTargets(ctx, p.r.Reader, p.r.Mapper, p.r.Config.Policy, ab.Namespace, ab.Spec.Target.Resources)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	if v != nil {
-		return p.refuse(v)
+	if pending != nil {
+		return p.refuse(pending)
 	}
 	if st.PendingOperation != nil {
 		if res, err, proceed := p.resolvePending(ctx); !proceed {
@@ -330,6 +397,72 @@ func (p *abPass) reconcile(ctx context.Context) (ctrl.Result, error) {
 	p.cond(iamv1alpha1.ConditionDrifted, metav1.ConditionFalse, iamv1alpha1.ReasonNoDrift, "")
 	p.cond(iamv1alpha1.ConditionReady, metav1.ConditionTrue, iamv1alpha1.ReasonReconciled, "")
 	return ctrl.Result{RequeueAfter: p.r.DriftInterval}, nil
+}
+
+// judge судит выдачу политикой оператора: роль, субъекты и автор
+// (Evaluate), гарантия допуска для субъектов user/group и цели allInScope,
+// принадлежность целей namespace CR. forbid — выдача запрещена: держимая
+// отзывается (reject), и Orphan её не оставляет; pending — цель не найдена
+// либо не готова: ждать, ничего не отзывая. Цель «вся область» объекта
+// namespace не называет: подтверждать нечего, её пределы — область выдачи из
+// аннотаций namespace.
+//
+// Свидетельство допуска проход пишет в status с первого прохода, когда
+// перечень policy.admissionGuard не пуст, — и тогда, когда выдаче гарантия не
+// нужна либо её отказывает политика оператора (Evaluate): иначе правку
+// политики на месте до того, как выдача перешла на цель «вся область» или на
+// допустимый spec, оператор не отличил бы от политики, стоявшей всегда.
+// Отказ гарантии запрещает только выдачу, которой она нужна; отказ политики
+// оператора — первым.
+func (p *abPass) judge(ctx context.Context) (forbid, pending *policy.Violation, err error) {
+	ab := p.ab
+	refused := policy.Evaluate(p.r.Config.Policy, ab)
+	if needs := policy.NeedsAdmissionGuarantee(ab); needs || len(p.r.Config.Policy.AdmissionGuard) > 0 {
+		g, err := policy.CheckAdmissionGuarantee(ctx, p.r.Reader, p.r.Config.Policy, p.r.Seal, ab, p.now())
+		switch {
+		case err != nil && refused != nil:
+			// Запрещённую выдачу отзывает отказ политики оператора, и сбой
+			// чтения политик допуска этого не откладывает.
+			return refused, nil, nil
+		case err != nil:
+			return nil, nil, err
+		}
+		ab.Status.AdmissionWitness = g.Witness
+		p.recheck = g.RecheckAfter
+		p.observeRewitness(g)
+		if refused == nil && g.Violation != nil && needs {
+			return g.Violation, nil, nil
+		}
+	}
+	if refused != nil {
+		return refused, nil, nil
+	}
+	v, err := policy.ResolveTargets(ctx, p.r.Reader, p.r.Mapper, p.r.Config.Policy, ab.Namespace, ab.Spec.Target.Resources)
+	if err != nil {
+		return nil, nil, err
+	}
+	if v != nil && v.Reason == iamv1alpha1.ReasonForbidden {
+		return v, nil, nil
+	}
+	return nil, v, nil
+}
+
+// observeRewitness сообщает исход нового значения аннотации rewitness.
+func (p *abPass) observeRewitness(g policy.Guarantee) {
+	switch {
+	case g.Rewitness == "":
+	case g.Rewitnessed:
+		p.r.Recorder.Eventf(p.ab, nil, corev1.EventTypeNormal, "Rewitnessed", "Reconcile",
+			"annotation %s=%s: the standing admission policies are witnessed for the current spec", iamv1alpha1.AnnotationRewitness, g.Rewitness)
+	default:
+		msg := "the admission policies are not standing, were not yet seen by the operator or have not taken effect"
+		if g.Violation != nil {
+			msg = g.Violation.Message
+		}
+		p.r.Recorder.Eventf(p.ab, nil, corev1.EventTypeWarning, "RewitnessIgnored", "Reconcile",
+			"annotation %s=%s is not honoured (%s); set a new value once every record of status.admissionWitness names the uid and metadata.generation of the standing policy and binding and carries no pendingSince",
+			iamv1alpha1.AnnotationRewitness, g.Rewitness, msg)
+	}
 }
 
 // resolve переводит субъектов, роль и область в термины kaname.
@@ -611,55 +744,92 @@ func (p *abPass) apply(ctx context.Context, verb iamv1alpha1.OperationVerb, subj
 	return ctrl.Result{RequeueAfter: requeueNow}, nil
 }
 
-// finalize — удаление CR: отозвать прежнюю и действующую выдачи, снять
-// финализатор. Orphan — только снять финализатор.
+// finalize — удаление CR: отозвать всё, что объект держит в kaname
+// (withdraw), снять финализатор. Orphan — только снять финализатор, если
+// выдача допустима: выдачу, которую политика оператора запрещает (отзыв уже
+// идёт — Rejected/PolicyNarrowed — либо запрет впервые виден сейчас), Orphan
+// не оставляет — она отзывается тем же порядком и повторяется до отзыва.
+// Выдачу, чей тип цели больше не разрешается (RESTMapper не знает ресурса:
+// снят CRD объекта цели), судить нечем: Orphan её тоже не оставляет, и
+// удаление завершается отзывом по её id, а не держит CR и его namespace в
+// Terminating, пока тип не вернётся.
 func (p *abPass) finalize(ctx context.Context) (ctrl.Result, error) {
-	ab, st := p.ab, &p.ab.Status
+	ab := p.ab
 	if !controllerutil.ContainsFinalizer(ab, iamv1alpha1.Finalizer) {
 		return ctrl.Result{}, nil
 	}
 	if ab.Spec.EffectiveDeletionPolicy() == iamv1alpha1.DeletionPolicyOrphan {
-		return p.removeFinalizer(ctx)
+		forbid, _, err := p.judge(ctx)
+		what := "deletionPolicy Orphan does not keep a binding the operator policy forbids, withdrawing it"
+		switch {
+		case meta.IsNoMatchError(err):
+			forbid = &policy.Violation{Reason: iamv1alpha1.ReasonForbidden, Message: fmt.Sprintf("the target cannot be judged: %v", err)}
+			what = "deletionPolicy Orphan does not keep a binding whose target type does not resolve, withdrawing it"
+		case err != nil:
+			return ctrl.Result{}, err
+		}
+		if forbid == nil && !p.narrowed() {
+			return p.removeFinalizer(ctx)
+		}
+		if forbid != nil && !p.narrowed() && p.holds() {
+			p.announceWithdrawal(forbid, what)
+			p.cond(iamv1alpha1.ConditionRejected, metav1.ConditionTrue, iamv1alpha1.ReasonPolicyNarrowed, forbid.Message)
+		}
 	}
+	res, err, done := p.withdraw(ctx)
+	if !done {
+		return res, err
+	}
+	return p.removeFinalizer(ctx)
+}
+
+// withdraw снимает всё, что объект держит в kaname: дочитывает операцию,
+// отзывает прежнюю замену и действующую выдачу. Выдача могла завестись, но не
+// дойти до status: своя ищется по меткам в аккаунте намерения и в аккаунте
+// namespace; не найдена, а создание не подтверждено, — проход ждёт её
+// появления либо истечения окна (awaitCreate). Один изменяющий вызов за
+// проход; done — держать больше нечего.
+func (p *abPass) withdraw(ctx context.Context) (ctrl.Result, error, bool) {
+	st := &p.ab.Status
 	if st.PendingOperation != nil {
 		if res, err, proceed := p.resolvePending(ctx); !proceed {
-			return res, err
+			return res, err, false
 		}
 	}
 	if st.Replaced != nil {
-		return p.revoke(ctx, st.Replaced.ID)
+		res, err := p.revoke(ctx, st.Replaced.ID)
+		return res, err, false
 	}
 	if st.ID != "" {
-		return p.revoke(ctx, st.ID)
+		res, err := p.revoke(ctx, st.ID)
+		return res, err, false
 	}
-	// Выдача могла завестись, но не дойти до status: ищется своя по меткам в
-	// аккаунте намерения и в аккаунте namespace. Не найдена, а создание не
-	// подтверждено, — финализатор держится до её появления либо до истечения
-	// окна (awaitCreate).
 	recorded := ""
 	if st.Resolved != nil {
 		recorded = st.Resolved.AccountID
 	}
-	accounts, err := deletionAccounts(ctx, p.r.Client, ab.Namespace, recorded)
+	accounts, err := deletionAccounts(ctx, p.r.Client, p.ab.Namespace, recorded)
 	if err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, err, false
 	}
 	for _, acc := range accounts {
 		list, err := p.r.Kaname.ListAccessBindingsByAccount(ctx, acc)
 		if err != nil {
-			return p.fail(err)
+			res, ferr := p.fail(err)
+			return res, ferr, false
 		}
 		p.seeIntent(list)
 		for _, b := range list {
 			if b.GetStatus() != iamv1.AccessBinding_REVOKED && p.owned(b.GetLabels()) {
-				return p.revoke(ctx, b.GetId())
+				res, err := p.revoke(ctx, b.GetId())
+				return res, err, false
 			}
 		}
 	}
 	if res, wait := p.awaitCreate(); wait {
-		return res, nil
+		return res, nil, false
 	}
-	return p.removeFinalizer(ctx)
+	return ctrl.Result{}, nil, true
 }
 
 // clearIntent снимает намерение создания: его исход известен.

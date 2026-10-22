@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	authenticationv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -38,6 +39,15 @@ var guardNames []string
 // envtestAdmin — пользователь администратора envtest: писатель чарта, но не
 // принципал платформы.
 var envtestAdmin string
+
+// admissionInstalled — позднейшая отметка создания политик допуска чарта;
+// itEnforcementDelay — срок вступления их в силу в конфигурации оператора
+// прогона (policy.admissionEnforcementDelay). Объект, созданный меньше чем
+// за срок и секунду после политики, оператор моложе неё не считает: прогон
+// ждёт срок до первой пробы (startManager).
+var admissionInstalled time.Time
+
+const itEnforcementDelay = time.Second
 
 // installAdmission ставит в envtest ValidatingAdmissionPolicy ЧАРТА — те же,
 // что уезжают в кластер, — с писателями прогона: администратор envtest (им
@@ -91,6 +101,9 @@ func installAdmission(ctx context.Context) int {
 			}
 			obj := u.DeepCopy()
 			cleanups = append(cleanups, func() { _ = k8s.Delete(context.Background(), obj) })
+			if ct := u.GetCreationTimestamp().Time; ct.After(admissionInstalled) {
+				admissionInstalled = ct
+			}
 			installed++
 		case u.GetKind() == "ConfigMap" && strings.HasSuffix(u.GetName(), "-config"):
 			raw, _, _ := unstructured.NestedString(u.Object, "data", "config.yaml")

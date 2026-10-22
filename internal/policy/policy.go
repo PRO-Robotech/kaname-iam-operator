@@ -14,8 +14,14 @@
 // объекте k8s нет: managedFields тоже пишет клиент (имя менеджера полей —
 // параметр запроса). Поэтому эта ограда честно зависит от допуска, и
 // оператор сверяет саму гарантию: политики допуска стоят, отказывают и
-// существовали к моменту создания CR (CheckAdmissionGuarantee). Нет
+// исполнялись, когда записан текущий spec CR (CheckAdmissionGuarantee). Нет
 // гарантии — нет ни выдачи user/group, ни выдачи на всю область.
+//
+// Ограда судит выдачу на каждой реконсиляции, а не только при заведении:
+// выдачу, которую сужение конфигурации (перечень ролей, принципалов
+// платформы), цель, ушедшая из namespace CR, либо потеря гарантии сделали
+// недопустимой, оператор отзывает в kaname и вновь не заводит, пока она снова
+// не станет допустимой.
 package policy
 
 import (
@@ -40,6 +46,11 @@ type Violation struct {
 	Reason string
 	// Message — что именно нарушено.
 	Message string
+	// Admission — нарушена гарантия допуска (политики допуска сняты, не
+	// отказывают, переустановлены, правлены на месте до подтверждения
+	// гарантии текущего spec, ещё не вступили в силу): выдачу, которую объект
+	// держал, отзывает её потеря, а не сужение конфигурации.
+	Admission bool
 }
 
 func (v *Violation) Error() string { return v.Reason + ": " + v.Message }
@@ -99,51 +110,71 @@ func forbidden(format string, a ...any) *Violation {
 
 // ResolveTargets подтверждает каждую цель объектом namespace CR. Объект не
 // найден либо не готов — Reason TargetUnresolved (временно); объект чужого
-// namespace либо тип цели без правила — Reason Forbidden.
+// namespace либо тип цели без правила — Reason Forbidden. Судятся все цели:
+// запрет хоть одной заслоняет ожидание прочих — запрет отзывает выдачу,
+// ожидание нет.
 func ResolveTargets(ctx context.Context, c client.Reader, mapper RESTMapper, p config.Policy, namespace string, targets []iamv1alpha1.ResourceRef) (*Violation, error) {
+	var pending *Violation
 	for i, t := range targets {
-		r, ok := p.TargetResolvers[t.Type]
-		if !ok {
-			return forbidden("target.resources[%d]: type %q has no resolver in the operator configuration", i, t.Type), nil
-		}
-		gvr := schema.GroupVersionResource{Group: r.Group, Version: r.Version, Resource: r.Resource}
-		gvk, err := mapper.KindFor(gvr)
+		v, err := resolveTarget(ctx, c, mapper, p, namespace, i, t)
 		if err != nil {
-			return nil, fmt.Errorf("target %s: resolve kind of %s: %w", t.Type, gvr, err)
+			return nil, err
 		}
-		obj := &unstructured.Unstructured{}
-		obj.SetGroupVersionKind(gvk)
-		key := client.ObjectKey{Name: t.ID}
-		if r.Namespaced {
-			key.Namespace = namespace
-		}
-		if err := c.Get(ctx, key, obj); err != nil {
-			if apierrors.IsNotFound(err) {
-				return &Violation{Reason: iamv1alpha1.ReasonTargetUnresolved,
-					Message: fmt.Sprintf("target %s:%s: %s %q not found", t.Type, t.ID, gvk.Kind, t.ID)}, nil
-			}
-			return nil, fmt.Errorf("target %s:%s: %w", t.Type, t.ID, err)
-		}
-		for _, m := range r.Match {
-			got, found, err := unstructured.NestedString(obj.Object, strings.Split(m.Path, ".")...)
-			if err != nil {
-				found = false
-			}
-			if m.Equals == config.NamespacePlaceholder {
-				// Принадлежность цели namespace CR: расхождение — чужая цель,
-				// а не «ещё не готово».
-				if !found || got != namespace {
-					return forbidden("target %s:%s belongs to namespace %q, not %q", t.Type, t.ID, got, namespace), nil
-				}
-				continue
-			}
-			if !found || got != m.Equals {
-				return &Violation{Reason: iamv1alpha1.ReasonTargetUnresolved,
-					Message: fmt.Sprintf("target %s:%s: %s is %q, want %q", t.Type, t.ID, m.Path, got, m.Equals)}, nil
-			}
+		switch {
+		case v == nil:
+		case v.Reason == iamv1alpha1.ReasonForbidden:
+			return v, nil
+		case pending == nil:
+			pending = v
 		}
 	}
-	return nil, nil
+	return pending, nil
+}
+
+// resolveTarget подтверждает цель t (номер i) объектом namespace CR.
+func resolveTarget(ctx context.Context, c client.Reader, mapper RESTMapper, p config.Policy, namespace string, i int, t iamv1alpha1.ResourceRef) (*Violation, error) {
+	r, ok := p.TargetResolvers[t.Type]
+	if !ok {
+		return forbidden("target.resources[%d]: type %q has no resolver in the operator configuration", i, t.Type), nil
+	}
+	gvr := schema.GroupVersionResource{Group: r.Group, Version: r.Version, Resource: r.Resource}
+	gvk, err := mapper.KindFor(gvr)
+	if err != nil {
+		return nil, fmt.Errorf("target %s: resolve kind of %s: %w", t.Type, gvr, err)
+	}
+	obj := &unstructured.Unstructured{}
+	obj.SetGroupVersionKind(gvk)
+	key := client.ObjectKey{Name: t.ID}
+	if r.Namespaced {
+		key.Namespace = namespace
+	}
+	if err := c.Get(ctx, key, obj); err != nil {
+		if apierrors.IsNotFound(err) {
+			return &Violation{Reason: iamv1alpha1.ReasonTargetUnresolved,
+				Message: fmt.Sprintf("target %s:%s: %s %q not found", t.Type, t.ID, gvk.Kind, t.ID)}, nil
+		}
+		return nil, fmt.Errorf("target %s:%s: %w", t.Type, t.ID, err)
+	}
+	var pending *Violation
+	for _, m := range r.Match {
+		got, found, err := unstructured.NestedString(obj.Object, strings.Split(m.Path, ".")...)
+		if err != nil {
+			found = false
+		}
+		if m.Equals == config.NamespacePlaceholder {
+			// Принадлежность цели namespace CR: расхождение — чужая цель,
+			// а не «ещё не готово».
+			if !found || got != namespace {
+				return forbidden("target %s:%s belongs to namespace %q, not %q", t.Type, t.ID, got, namespace), nil
+			}
+			continue
+		}
+		if (!found || got != m.Equals) && pending == nil {
+			pending = &Violation{Reason: iamv1alpha1.ReasonTargetUnresolved,
+				Message: fmt.Sprintf("target %s:%s: %s is %q, want %q", t.Type, t.ID, m.Path, got, m.Equals)}
+		}
+	}
+	return pending, nil
 }
 
 // RESTMapper — то из RESTMapper, что нужно разрешению целей.

@@ -16,6 +16,8 @@ const (
 	// удалить учётку с её ключами и записями Vault).
 	DeletionPolicyDelete DeletionPolicy = "Delete"
 	// DeletionPolicyOrphan — снять только финализатор, в kaname ничего не звать.
+	// Выдачу AccessBinding, которую запрещает политика оператора, Orphan не
+	// оставляет: она отзывается, как при Delete.
 	DeletionPolicyOrphan DeletionPolicy = "Orphan"
 )
 
@@ -84,6 +86,13 @@ const (
 	// Подлинность держит ограждение допуска: на CREATE значение обязано быть
 	// равно request.userInfo.username, на UPDATE — неизменно.
 	AnnotationCreatedBy = "iam.kaname.in-cloud.io/created-by"
+	// AnnotationRewitness — аннотация AccessBinding: новое значение просит
+	// оператор засвидетельствовать стоящие политики допуска для текущего spec
+	// — так платформа, сверив spec, восстанавливает выдачи после переустановки
+	// политик (новый uid) без смены spec. Ставит только платформа (ограждение
+	// допуска); значение, поставленное раньше, чем стоящие политики,
+	// увиденные оператором, вступили в силу, не исполняется.
+	AnnotationRewitness = "iam.kaname.in-cloud.io/rewitness"
 )
 
 // Finalizer — финализатор обоих видов.
@@ -97,6 +106,11 @@ const (
 	ConditionDrifted        = "Drifted"
 	ConditionConflict       = "Conflict"
 	ConditionSubjectPending = "SubjectPending"
+	// ConditionRejected — выдача запрещена политикой оператора либо не имеет
+	// гарантии допуска. Причина PolicyNarrowed — выдачу, которую объект уже
+	// держал в kaname, оператор отзывает (отозвал) и вновь не заводит, пока
+	// выдача снова не станет допустимой.
+	ConditionRejected = "Rejected"
 )
 
 // Причины условий.
@@ -123,4 +137,10 @@ const (
 	ReasonDeletionBlocked    = "DeletionBlocked"
 	ReasonKeysIssuing        = "Issuing"
 	ReasonVaultUnavailable   = "VaultUnavailable"
+	ReasonPolicyNarrowed     = "PolicyNarrowed"
+	ReasonPolicySatisfied    = "PolicySatisfied"
+	// ReasonAdmissionGuaranteeLost — причина события об отзыве выдачи,
+	// потерявшей гарантию допуска (политики сняты, переустановлены либо
+	// правлены на месте).
+	ReasonAdmissionGuaranteeLost = "AdmissionGuaranteeLost"
 )

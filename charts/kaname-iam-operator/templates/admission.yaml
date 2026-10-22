@@ -9,8 +9,8 @@
 {{- $classRoles := .Values.config.policy.systemClassRoles | default list }}
 # Писатели CR: перечень настраиваемый (registry-operator, онбординг, Argo CD).
 # Оператор сам меняет только финализаторы; удалять CR, кроме писателей, вправе
-# контроллер namespace и сборщик мусора. Аннотацию resync-drift, субъектов
-# user/group и цель allInScope ставит только платформа.
+# контроллер namespace и сборщик мусора. Аннотации resync-drift и rewitness,
+# субъектов user/group и цель allInScope ставит только платформа.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -59,6 +59,15 @@ spec:
         (variables.annotations[?'iam.kaname.in-cloud.io/resync-drift'].orValue('') == variables.oldAnnotations[?'iam.kaname.in-cloud.io/resync-drift'].orValue('')) ||
         variables.platform
       message: "annotation iam.kaname.in-cloud.io/resync-drift is set only by a platform principal"
+      reason: Forbidden
+    # rewitness — просьба засвидетельствовать политики допуска для текущего
+    # spec: по ней оператор восстанавливает выдачи пользователям и на всю
+    # область без смены spec.
+    - expression: >-
+        request.operation == 'DELETE' ||
+        (variables.annotations[?'iam.kaname.in-cloud.io/rewitness'].orValue('') == variables.oldAnnotations[?'iam.kaname.in-cloud.io/rewitness'].orValue('')) ||
+        variables.platform
+      message: "annotation iam.kaname.in-cloud.io/rewitness is set only by a platform principal"
       reason: Forbidden
     - expression: >-
         request.operation != 'CREATE' ||

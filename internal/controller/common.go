@@ -33,6 +33,7 @@ import (
 	"github.com/PRO-Robotech/kaname-iam-operator/internal/config"
 	"github.com/PRO-Robotech/kaname-iam-operator/internal/kaname"
 	"github.com/PRO-Robotech/kaname-iam-operator/internal/metrics"
+	"github.com/PRO-Robotech/kaname-iam-operator/internal/policy"
 	"github.com/PRO-Robotech/kaname-iam-operator/internal/vault"
 )
 
@@ -76,6 +77,9 @@ type Deps struct {
 	Config   *config.Config
 	Recorder events.EventRecorder
 	Clock    clock.PassiveClock
+	// Seal — печать свидетельства допуска: свидетельство в status без неё
+	// гарантии не даёт (policy.CheckAdmissionGuarantee).
+	Seal *policy.WitnessSeal
 	// DriftInterval — как часто готовый объект сверяется с kaname.
 	DriftInterval time.Duration
 	// MaxConcurrentReconciles — параллельные проходы на вид (один объект

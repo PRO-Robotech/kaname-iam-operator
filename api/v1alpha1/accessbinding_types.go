@@ -5,6 +5,7 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // LocalServiceAccountRef — ссылка на CR ServiceAccount в том же namespace.
@@ -144,7 +145,12 @@ type AccessBindingSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self.all(k, size(self[k]) <= 63)",message="label values must be at most 63 characters"
 	// +optional
 	Labels map[string]string `json:"labels,omitempty"`
-	// DeletionPolicy — что делать с выдачей kaname при удалении CR.
+	// DeletionPolicy — что делать с выдачей kaname при удалении CR. Orphan
+	// касается только удаления и только допустимой выдачи: выдачу, ставшую
+	// недопустимой политикой оператора (Rejected/PolicyNarrowed, в том числе
+	// без гарантии допуска либо с целью из чужого namespace), оператор
+	// отзывает при любой политике удаления — и при удалении CR с Orphan,
+	// повторяя отзыв до успеха.
 	// +kubebuilder:default=Delete
 	// +optional
 	DeletionPolicy DeletionPolicy `json:"deletionPolicy,omitempty"`
@@ -176,6 +182,82 @@ type ResolvedBinding struct {
 	// AccountID — аккаунт области: по нему ищется своя выдача.
 	// +optional
 	AccountID string `json:"accountId,omitempty"`
+}
+
+// AdmissionWitness — политики допуска, увиденные оператором: по записи на
+// политику. Объект k8s с тем же uid существует непрерывно, а его
+// metadata.generation растёт при каждой правке spec и не убывает, поэтому
+// политика, чьи uid и поколение совпадают с записанными, стояла неизменной с
+// момента записи, а по истечении срока вступления в силу
+// (policy.admissionEnforcementDelay) — и исполнялась: гарантия допуска
+// судится на последнюю смену spec, а не на создание CR. status пишет не
+// только оператор (пока политика status не исполняется — любой, кому RBAC
+// даёт accessbindings/status), поэтому оператор доверяет свидетельству только
+// с верной печатью (Seal). Запись идёт с проверкой resourceVersion: поколение
+// spec в записи — то, что было у объекта в момент чтения политик.
+type AdmissionWitness struct {
+	// Policies — увиденные политики и их привязки, по записи на политику.
+	// Смена состава policy.admissionGuard записи прочих политик не трогает.
+	// +listType=map
+	// +listMapKey=name
+	Policies []AdmissionPolicyUIDs `json:"policies"`
+	// RewitnessNonce — значение аннотации rewitness, уже учтённое оператором
+	// (исполненное либо отклонённое). Записывается вместе с политиками:
+	// новое значение аннотации поставлено после этой записи.
+	// +optional
+	RewitnessNonce string `json:"rewitnessNonce,omitempty"`
+	// ConfirmedGeneration — поколение spec, для которого проход оператора
+	// подтвердил гарантию: каждая политика стояла, отказывала и доказывала
+	// это поколение. Правка политик на месте (смена values чарта растит их
+	// metadata.generation) выдачу этого поколения не отзывает: spec записан
+	// при прежней, уже действовавшей версии. Снимается переустановкой
+	// политики (новый uid), её снятием и отказом: выдачу после них заново
+	// подтверждает смена spec при стоящих политиках либо rewitness платформы.
+	// 0 — подтверждения нет.
+	// +optional
+	ConfirmedGeneration int64 `json:"confirmedGeneration,omitempty"`
+	// ConfirmedCreatedBy — значение аннотации created-by при том
+	// подтверждении: другое значение подтверждением не покрыто.
+	// +optional
+	ConfirmedCreatedBy string `json:"confirmedCreatedBy,omitempty"`
+	// Seal — печать оператора: HMAC-SHA256 по uid объекта и всему
+	// свидетельству на ключе из Secret в namespace оператора. Свидетельство
+	// без верной печати (записанное не оператором либо при другом ключе)
+	// оператор читает как отсутствие свидетельства.
+	// +optional
+	Seal string `json:"seal,omitempty"`
+}
+
+// AdmissionPolicyUIDs — увиденные uid и поколения политики допуска и её
+// привязки с тем же именем.
+type AdmissionPolicyUIDs struct {
+	// Name — имя политики и привязки.
+	Name string `json:"name"`
+	// PolicyUID — uid ValidatingAdmissionPolicy.
+	PolicyUID types.UID `json:"policyUID"`
+	// PolicyGeneration — metadata.generation политики, когда она увидена.
+	// +optional
+	PolicyGeneration int64 `json:"policyGeneration,omitempty"`
+	// BindingUID — uid ValidatingAdmissionPolicyBinding.
+	BindingUID types.UID `json:"bindingUID"`
+	// BindingGeneration — metadata.generation привязки, когда она увидена.
+	// +optional
+	BindingGeneration int64 `json:"bindingGeneration,omitempty"`
+	// Generation — поколение spec объекта, при котором политика с этими uid и
+	// поколениями увидена в силе (первым проходом после срока вступления в
+	// силу): запись доказывает смены spec ПОСЛЕ него.
+	// 0 — политика старше самого объекта либо засвидетельствована платформой
+	// (аннотация rewitness): запись доказывает любое поколение spec.
+	// +optional
+	Generation int64 `json:"generation,omitempty"`
+	// PendingSince — когда оператор впервые увидел эту версию политики и
+	// привязки, если срок вступления в силу (policy.admissionEnforcementDelay)
+	// от того момента ещё не истёк при записи. kube-apiserver перечитывает
+	// политики периодически: увиденная оператором версия ещё могла не
+	// исполняться, и такая запись не доказывает ни одного поколения spec.
+	// Снимается первым проходом после срока; Generation он ставит текущим.
+	// +optional
+	PendingSince *metav1.Time `json:"pendingSince,omitempty"`
 }
 
 // ReplacedBinding — прежняя выдача, ждущая отзыва после заведения новой.
@@ -220,7 +302,11 @@ type AccessBindingStatus struct {
 	// уже выполнено.
 	// +optional
 	ResyncNonce string `json:"resyncNonce,omitempty"`
-	// Conditions — Ready, Synced, Conflict, SubjectPending, Drifted.
+	// AdmissionWitness — политики допуска, увиденные оператором, по записи
+	// на политику: ими гарантия допуска судится на последнюю смену spec.
+	// +optional
+	AdmissionWitness *AdmissionWitness `json:"admissionWitness,omitempty"`
+	// Conditions — Ready, Synced, Conflict, SubjectPending, Drifted, Rejected.
 	// +listType=map
 	// +listMapKey=type
 	// +optional

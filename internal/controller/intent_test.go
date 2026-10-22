@@ -249,31 +249,58 @@ func TestABUserSubjectIsRefusedWithoutTheAdmissionGuarantee(t *testing.T) {
 // допуск (его судят test/admission и e2e). Снимаются в конце пробы.
 func installAdmissionGuard(t *testing.T) {
 	t.Helper()
+	for _, name := range testCfg.Policy.AdmissionGuard {
+		installGuardPolicy(t, name)
+	}
+	predate(t, testCfg.Policy.AdmissionGuard...)
+}
+
+// predate ждёт, пока политики names станут старше объектов, заводимых после:
+// политику, созданную меньше чем за срок вступления в силу (и секунду
+// точности отметок времени) до объекта, оператор старше него не считает.
+func predate(t *testing.T, names ...string) {
+	t.Helper()
+	var last time.Time
+	for _, name := range names {
+		for _, obj := range []client.Object{&admissionv1.ValidatingAdmissionPolicy{}, &admissionv1.ValidatingAdmissionPolicyBinding{}} {
+			if err := k8s.Get(context.Background(), client.ObjectKey{Name: name}, obj); err != nil {
+				t.Fatalf("predate %s: %v", name, err)
+			}
+			if ct := obj.GetCreationTimestamp().Time; ct.After(last) {
+				last = ct
+			}
+		}
+	}
+	time.Sleep(time.Until(last.Add(testCfg.Policy.AdmissionEnforcementDelay.Duration + time.Second + 100*time.Millisecond)))
+}
+
+// installGuardPolicy ставит одну политику допуска name с привязкой того же
+// имени; снимается в конце пробы.
+func installGuardPolicy(t *testing.T, name string) {
+	t.Helper()
 	ctx := context.Background()
 	fail := admissionv1.Fail
-	for _, name := range testCfg.Policy.AdmissionGuard {
-		vap := &admissionv1.ValidatingAdmissionPolicy{
-			ObjectMeta: metav1.ObjectMeta{Name: name},
-			Spec: admissionv1.ValidatingAdmissionPolicySpec{
-				FailurePolicy: &fail,
-				MatchConstraints: &admissionv1.MatchResources{ResourceRules: []admissionv1.NamedRuleWithOperations{{
-					RuleWithOperations: admissionv1.RuleWithOperations{
-						Operations: []admissionv1.OperationType{admissionv1.Create},
-						Rule:       admissionv1.Rule{APIGroups: []string{"iam.kaname.in-cloud.io"}, APIVersions: []string{"*"}, Resources: []string{"accessbindings"}},
-					},
-				}}},
-				Validations: []admissionv1.Validation{{Expression: "true"}},
-			},
+	vap := &admissionv1.ValidatingAdmissionPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: admissionv1.ValidatingAdmissionPolicySpec{
+			FailurePolicy: &fail,
+			MatchConstraints: &admissionv1.MatchResources{ResourceRules: []admissionv1.NamedRuleWithOperations{{
+				RuleWithOperations: admissionv1.RuleWithOperations{
+					Operations: []admissionv1.OperationType{admissionv1.Create},
+					Rule:       admissionv1.Rule{APIGroups: []string{"iam.kaname.in-cloud.io"}, APIVersions: []string{"*"}, Resources: []string{"accessbindings"}},
+				},
+			}}},
+			Validations: []admissionv1.Validation{{Expression: "true"}},
+		},
+	}
+	bnd := &admissionv1.ValidatingAdmissionPolicyBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec:       admissionv1.ValidatingAdmissionPolicyBindingSpec{PolicyName: name, ValidationActions: []admissionv1.ValidationAction{admissionv1.Deny}},
+	}
+	for _, obj := range []client.Object{vap, bnd} {
+		if err := k8s.Create(ctx, obj); err != nil {
+			t.Fatalf("install admission guard %s: %v", name, err)
 		}
-		bnd := &admissionv1.ValidatingAdmissionPolicyBinding{
-			ObjectMeta: metav1.ObjectMeta{Name: name},
-			Spec:       admissionv1.ValidatingAdmissionPolicyBindingSpec{PolicyName: name, ValidationActions: []admissionv1.ValidationAction{admissionv1.Deny}},
-		}
-		for _, obj := range []client.Object{vap, bnd} {
-			if err := k8s.Create(ctx, obj); err != nil {
-				t.Fatalf("install admission guard %s: %v", name, err)
-			}
-			t.Cleanup(func() { _ = k8s.Delete(context.Background(), obj) })
-		}
+		t.Cleanup(func() { _ = k8s.Delete(context.Background(), obj) })
 	}
 }

@@ -47,6 +47,7 @@ spec:
             - --drift-interval={{ .Values.driftInterval }}
             - --max-concurrent-reconciles={{ .Values.maxConcurrentReconciles }}
             - --health-probe-bind-address=:8081
+            - --witness-key-secret={{ include "kio.witnessKeySecret" . }}
             {{- if .Values.metrics.enabled }}
             - --metrics-bind-address=:{{ .Values.metrics.port }}
             - --metrics-secure=true

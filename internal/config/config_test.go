@@ -70,6 +70,11 @@ func TestParseValidConfigAppliesDefaults(t *testing.T) {
 	if got := c.Kaname.TokenURL; got != "https://kaname.kaname.svc:9098/iam/v1/token" {
 		t.Errorf("kaname.tokenURL default = %q", got)
 	}
+	// Срок вступления политики допуска в силу: интервал перечитывания
+	// политик kube-apiserver (1 с) с запасом.
+	if got := c.Policy.AdmissionEnforcementDelay.Duration; got != 10*time.Second {
+		t.Errorf("policy.admissionEnforcementDelay default = %s, want 10s", got)
+	}
 	if c.Kaname.QPS != 10 || c.Kaname.Burst != 20 {
 		t.Errorf("kaname rate default = %v/%d, want 10/20", c.Kaname.QPS, c.Kaname.Burst)
 	}
@@ -114,6 +119,10 @@ func TestParseRefusesEachBrokenFact(t *testing.T) {
 		// Окно короче фонового исполнения kaname — пустой поиск снова читался
 		// бы доказательством отсутствия.
 		{"create grace below the floor", "audience: https://kaname.local", "audience: https://kaname.local\n  createGrace: 30s", "kaname.createGrace"},
+		// Срок короче интервала перечитывания политик kube-apiserver: запись
+		// версии, которую он ещё не исполняет, снова доказывала бы смену spec.
+		{"admission enforcement delay below the refresh interval", "  systemClassRoles: [registry.public.read]\n",
+			"  systemClassRoles: [registry.public.read]\n  admissionEnforcementDelay: 500ms\n", "policy.admissionEnforcementDelay"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
