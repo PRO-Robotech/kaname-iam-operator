@@ -56,7 +56,26 @@ func NeedsAdmissionGuarantee(ab *iamv1alpha1.AccessBinding) bool {
 // Предел гарантии: правку политики на месте (сужение matchConstraints,
 // подмена выражения) проверка не видит; её делает только тот, кому доступна
 // запись ValidatingAdmissionPolicy, то есть администратор кластера.
-func CheckAdmissionGuarantee(ctx context.Context, c client.Reader, names []string, ab *iamv1alpha1.AccessBinding) (*Violation, *iamv1alpha1.AdmissionWitness, error) {
+func CheckAdmissionGuarantee(ctx context.Context, c client.Reader, names []string, ab *iamv1alpha1.AccessBinding) (Guarantee, error) {
+	v, w, err := checkAdmissionGuarantee(ctx, c, names, ab)
+	return Guarantee{Violation: v, Witness: w}, err
+}
+
+// Guarantee — исход сверки гарантии допуска.
+type Guarantee struct {
+	// Violation — гарантии нет; nil — есть.
+	Violation *Violation
+	// Witness — свидетельство, которое объекту следует хранить.
+	Witness *iamv1alpha1.AdmissionWitness
+	// Rewitness — новое значение аннотации rewitness, учтённое этой сверкой;
+	// пусто — нового значения нет.
+	Rewitness string
+	// Rewitnessed — значение Rewitness исполнено: политики засвидетельствованы
+	// для текущего spec. Ложь при непустом Rewitness — отклонено.
+	Rewitnessed bool
+}
+
+func checkAdmissionGuarantee(ctx context.Context, c client.Reader, names []string, ab *iamv1alpha1.AccessBinding) (*Violation, *iamv1alpha1.AdmissionWitness, error) {
 	if len(names) == 0 {
 		return forbidden("user and group subjects and an allInScope target need the admission guarantee of annotation %s, and the operator configuration names no admission policy (policy.admissionGuard)", iamv1alpha1.AnnotationCreatedBy), nil, nil
 	}

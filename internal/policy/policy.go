@@ -45,6 +45,10 @@ type Violation struct {
 	Reason string
 	// Message — что именно нарушено.
 	Message string
+	// Admission — нарушена гарантия допуска (политики допуска сняты,
+	// переустановлены, правлены на месте, не отказывают): выдачу,
+	// которую объект держал, отзывает её потеря, а не сужение конфигурации.
+	Admission bool
 }
 
 func (v *Violation) Error() string { return v.Reason + ": " + v.Message }

@@ -292,13 +292,13 @@ func (p *abPass) reconcile(ctx context.Context) (ctrl.Result, error) {
 		return p.reject(ctx, v)
 	}
 	if policy.NeedsAdmissionGuarantee(ab) {
-		v, w, err := policy.CheckAdmissionGuarantee(ctx, p.r.Reader, p.r.Config.Policy.AdmissionGuard, ab)
+		g, err := policy.CheckAdmissionGuarantee(ctx, p.r.Reader, p.r.Config.Policy.AdmissionGuard, ab)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
-		st.AdmissionWitness = w
-		if v != nil {
-			return p.reject(ctx, v)
+		st.AdmissionWitness = g.Witness
+		if g.Violation != nil {
+			return p.reject(ctx, g.Violation)
 		}
 	}
 	p.cond(iamv1alpha1.ConditionRejected, metav1.ConditionFalse, iamv1alpha1.ReasonPolicySatisfied, "")

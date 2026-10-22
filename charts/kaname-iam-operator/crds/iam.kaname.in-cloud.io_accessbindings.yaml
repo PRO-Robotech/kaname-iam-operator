@@ -248,15 +248,34 @@ spec:
                   policies:
                     description: Policies — увиденные политики и их привязки.
                     items:
-                      description: AdmissionPolicyUIDs — uid политики допуска и её
+                      description: |-
+                        AdmissionPolicyUIDs — увиденные uid и поколения политики допуска и её
                         привязки с тем же именем.
                       properties:
+                        bindingGeneration:
+                          description: BindingGeneration — metadata.generation привязки,
+                            когда она увидена.
+                          format: int64
+                          type: integer
                         bindingUID:
                           description: BindingUID — uid ValidatingAdmissionPolicyBinding.
                           type: string
+                        generation:
+                          description: |-
+                            Generation — поколение spec объекта, при котором политика с этими uid и
+                            поколениями увидена впервые: запись доказывает смены spec ПОСЛЕ него.
+                            0 — политика старше самого объекта либо засвидетельствована платформой
+                            (аннотация rewitness): запись доказывает любое поколение spec.
+                          format: int64
+                          type: integer
                         name:
                           description: Name — имя политики и привязки.
                           type: string
+                        policyGeneration:
+                          description: PolicyGeneration — metadata.generation политики,
+                            когда она увидена.
+                          format: int64
+                          type: integer
                         policyUID:
                           description: PolicyUID — uid ValidatingAdmissionPolicy.
                           type: string
@@ -269,8 +288,13 @@ spec:
                     x-kubernetes-list-map-keys:
                     - name
                     x-kubernetes-list-type: map
+                  rewitnessNonce:
+                    description: |-
+                      RewitnessNonce — значение аннотации rewitness, уже учтённое оператором
+                      (исполненное либо отклонённое). Записывается вместе с политиками:
+                      новое значение аннотации поставлено после этой записи.
+                    type: string
                 required:
-                - generation
                 - policies
                 type: object
               bindingHash:

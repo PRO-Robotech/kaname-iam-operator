@@ -182,31 +182,50 @@ type ResolvedBinding struct {
 	AccountID string `json:"accountId,omitempty"`
 }
 
-// AdmissionWitness — политики допуска, увиденные оператором, когда spec
-// объекта был поколения Generation. Объект k8s с тем же uid существует
-// непрерывно, поэтому политика, чей uid совпадает с увиденным, стояла и при
-// любой смене spec после Generation: гарантия допуска судится на последнюю
-// смену spec, а не на создание CR. Пишет только оператор: status держит
-// политика допуска status, и она сама входит в гарантию. Запись идёт с
-// проверкой resourceVersion: поколение в записи — то, что было у объекта в
-// момент чтения политик.
+// AdmissionWitness — политики допуска, увиденные оператором: по записи на
+// политику. Объект k8s с тем же uid существует непрерывно, а его
+// metadata.generation растёт при каждой правке spec и не убывает, поэтому
+// политика, чьи uid и поколение совпадают с записанными, стояла неизменной с
+// момента записи: гарантия допуска судится на последнюю смену spec, а не на
+// создание CR. Пишет только оператор: status держит политика допуска status,
+// и она сама входит в гарантию. Запись идёт с проверкой resourceVersion:
+// поколение spec в записи — то, что было у объекта в момент чтения политик.
 type AdmissionWitness struct {
 	// Generation — поколение spec в момент, когда политики увидены.
-	Generation int64 `json:"generation"`
+	// +optional
+	Generation int64 `json:"generation,omitempty"`
 	// Policies — увиденные политики и их привязки.
 	// +listType=map
 	// +listMapKey=name
 	Policies []AdmissionPolicyUIDs `json:"policies"`
+	// RewitnessNonce — значение аннотации rewitness, уже учтённое оператором
+	// (исполненное либо отклонённое). Записывается вместе с политиками:
+	// новое значение аннотации поставлено после этой записи.
+	// +optional
+	RewitnessNonce string `json:"rewitnessNonce,omitempty"`
 }
 
-// AdmissionPolicyUIDs — uid политики допуска и её привязки с тем же именем.
+// AdmissionPolicyUIDs — увиденные uid и поколения политики допуска и её
+// привязки с тем же именем.
 type AdmissionPolicyUIDs struct {
 	// Name — имя политики и привязки.
 	Name string `json:"name"`
 	// PolicyUID — uid ValidatingAdmissionPolicy.
 	PolicyUID types.UID `json:"policyUID"`
+	// PolicyGeneration — metadata.generation политики, когда она увидена.
+	// +optional
+	PolicyGeneration int64 `json:"policyGeneration,omitempty"`
 	// BindingUID — uid ValidatingAdmissionPolicyBinding.
 	BindingUID types.UID `json:"bindingUID"`
+	// BindingGeneration — metadata.generation привязки, когда она увидена.
+	// +optional
+	BindingGeneration int64 `json:"bindingGeneration,omitempty"`
+	// Generation — поколение spec объекта, при котором политика с этими uid и
+	// поколениями увидена впервые: запись доказывает смены spec ПОСЛЕ него.
+	// 0 — политика старше самого объекта либо засвидетельствована платформой
+	// (аннотация rewitness): запись доказывает любое поколение spec.
+	// +optional
+	Generation int64 `json:"generation,omitempty"`
 }
 
 // ReplacedBinding — прежняя выдача, ждущая отзыва после заведения новой.

@@ -77,7 +77,7 @@ func TestAdmissionGuaranteeHoldsOnlyWhenEveryFactHolds(t *testing.T) {
 		if mutate != nil {
 			objs = mutate(objs)
 		}
-		v, _, err := CheckAdmissionGuarantee(context.Background(), guardClient(objs), names, binding(created, 1, nil))
+		v, _, err := checkAdmissionGuarantee(context.Background(), guardClient(objs), names, binding(created, 1, nil))
 		return v, err
 	}
 	if v, err := check(guardNames, nil); v != nil || err != nil {
@@ -140,7 +140,7 @@ func TestAdmissionGuaranteeIsJudgedAtTheLastSpecChange(t *testing.T) {
 	created := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
 	objs := func() []client.Object { return guard(created.Add(time.Hour)) }
 	ab := binding(created, 2, seen(1))
-	v, w, err := CheckAdmissionGuarantee(context.Background(), guardClient(objs()), guardNames, ab)
+	v, w, err := checkAdmissionGuarantee(context.Background(), guardClient(objs()), guardNames, ab)
 	if v != nil || err != nil {
 		t.Fatalf("lawful twin refused: policies seen at generation 1, spec changed to generation 2: %v %v", v, err)
 	}
@@ -169,7 +169,7 @@ func TestAdmissionGuaranteeIsJudgedAtTheLastSpecChange(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			v, w, err := CheckAdmissionGuarantee(context.Background(), guardClient(objs()), guardNames, binding(created, 2, tc.witness))
+			v, w, err := checkAdmissionGuarantee(context.Background(), guardClient(objs()), guardNames, binding(created, 2, tc.witness))
 			if err != nil {
 				t.Fatalf("error instead of a refusal: %v", err)
 			}
@@ -185,7 +185,7 @@ func TestAdmissionGuaranteeIsJudgedAtTheLastSpecChange(t *testing.T) {
 	}
 
 	t.Run("policies predating the object need no witness and are witnessed", func(t *testing.T) {
-		v, w, err := CheckAdmissionGuarantee(context.Background(), guardClient(guard(created.Add(-time.Hour))), guardNames, binding(created, 5, nil))
+		v, w, err := checkAdmissionGuarantee(context.Background(), guardClient(guard(created.Add(-time.Hour))), guardNames, binding(created, 5, nil))
 		if v != nil || err != nil {
 			t.Fatalf("refused: %v %v", v, err)
 		}
@@ -194,7 +194,7 @@ func TestAdmissionGuaranteeIsJudgedAtTheLastSpecChange(t *testing.T) {
 		}
 	})
 	t.Run("an absent policy is not witnessed", func(t *testing.T) {
-		v, w, err := CheckAdmissionGuarantee(context.Background(), guardClient(objs()[1:]), guardNames, binding(created, 2, seen(1)))
+		v, w, err := checkAdmissionGuarantee(context.Background(), guardClient(objs()[1:]), guardNames, binding(created, 2, seen(1)))
 		if err != nil || v == nil || !strings.Contains(v.Message, "kio-writers is absent") {
 			t.Fatalf("violation = %+v, %v", v, err)
 		}

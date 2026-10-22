@@ -53,11 +53,18 @@ var (
 	Refusals = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns, Name: "refusals_total", Help: "Reconcile refusals by kind and condition reason.",
 	}, []string{"kind", "reason"})
+	// Withdrawals — выдачи kaname, отозванные оттого, что стали недопустимыми,
+	// по причине: PolicyNarrowed — сужена конфигурация оператора либо цель
+	// ушла из namespace, AdmissionGuaranteeLost — потеряна гарантия допуска.
+	// Всплеск второй причины — переустановка или правка политик допуска.
+	Withdrawals = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Name: "binding_withdrawals_total", Help: "kaname bindings withdrawn because they became impermissible, by reason.",
+	}, []string{"reason"})
 )
 
 func init() {
 	crmetrics.Registry.MustRegister(KanameRequests, KanameLatency, TokenExchanges, VaultRequests, VaultLatency,
-		KeysIssued, KeysRevoked, Drift, Refusals)
+		KeysIssued, KeysRevoked, Drift, Refusals, Withdrawals)
 }
 
 // ObserveKaname — наблюдатель клиента kaname.
