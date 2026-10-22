@@ -16,7 +16,7 @@ const (
 	// удалить учётку с её ключами и записями Vault).
 	DeletionPolicyDelete DeletionPolicy = "Delete"
 	// DeletionPolicyOrphan — снять только финализатор, в kaname ничего не звать.
-	// Выдачу AccessBinding, которую запрещает политика оператора, Orphan не
+	// Выдачу IAMAccessBinding, которую запрещает политика оператора, Orphan не
 	// оставляет: она отзывается, как при Delete.
 	DeletionPolicyOrphan DeletionPolicy = "Orphan"
 )
@@ -86,7 +86,7 @@ const (
 	// Подлинность держит ограждение допуска: на CREATE значение обязано быть
 	// равно request.userInfo.username, на UPDATE — неизменно.
 	AnnotationCreatedBy = "iam.kaname.in-cloud.io/created-by"
-	// AnnotationRewitness — аннотация AccessBinding: новое значение просит
+	// AnnotationRewitness — аннотация IAMAccessBinding: новое значение просит
 	// оператор засвидетельствовать стоящие политики допуска для текущего spec
 	// — так платформа, сверив spec, восстанавливает выдачи после переустановки
 	// политик (новый uid) без смены spec. Ставит только платформа (ограждение

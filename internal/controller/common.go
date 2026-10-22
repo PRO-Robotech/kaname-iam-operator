@@ -1,7 +1,7 @@
 // Copyright (c) PRO-Robotech
 // SPDX-License-Identifier: Apache-2.0
 
-// Package controller — реконсиляция ServiceAccount и AccessBinding.
+// Package controller — реконсиляция IAMServiceAccount и IAMAccessBinding.
 //
 // Каждый проход делает не больше одного изменяющего вызова kaname: запущенная
 // операция записывается в status (PendingOperation) и дочитывается следующим

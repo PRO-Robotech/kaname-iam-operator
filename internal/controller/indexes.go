@@ -12,13 +12,13 @@ import (
 	iamv1alpha1 "github.com/PRO-Robotech/kaname-iam-operator/api/v1alpha1"
 )
 
-// indexBindingSA — индекс AccessBinding по именам CR ServiceAccount субъектов.
+// indexBindingSA — индекс IAMAccessBinding по именам CR IAMServiceAccount субъектов.
 const indexBindingSA = "spec.subjects.serviceAccountRef.name"
 
 // SetupIndexes регистрирует индексы полей.
 func SetupIndexes(ctx context.Context, mgr ctrl.Manager) error {
-	return mgr.GetFieldIndexer().IndexField(ctx, &iamv1alpha1.AccessBinding{}, indexBindingSA, func(o client.Object) []string {
-		ab, ok := o.(*iamv1alpha1.AccessBinding)
+	return mgr.GetFieldIndexer().IndexField(ctx, &iamv1alpha1.IAMAccessBinding{}, indexBindingSA, func(o client.Object) []string {
+		ab, ok := o.(*iamv1alpha1.IAMAccessBinding)
 		if !ok {
 			return nil
 		}
@@ -26,8 +26,8 @@ func SetupIndexes(ctx context.Context, mgr ctrl.Manager) error {
 	})
 }
 
-// referencedServiceAccounts — имена CR ServiceAccount, на которые ссылается выдача.
-func referencedServiceAccounts(ab *iamv1alpha1.AccessBinding) []string {
+// referencedServiceAccounts — имена CR IAMServiceAccount, на которые ссылается выдача.
+func referencedServiceAccounts(ab *iamv1alpha1.IAMAccessBinding) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, s := range ab.Spec.Subjects {

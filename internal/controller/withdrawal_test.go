@@ -31,7 +31,7 @@ import (
 // платформой; запись свидетельства против смены spec.
 
 // userAB — выдача пользователю id от принципала платформы.
-func userAB(tn tenant, name, id string) *iamv1alpha1.AccessBinding {
+func userAB(tn tenant, name, id string) *iamv1alpha1.IAMAccessBinding {
 	ab := newAB(tn, name, "unused", "registry.pusher", "abc123")
 	ab.Annotations = map[string]string{iamv1alpha1.AnnotationCreatedBy: platformPrincipal}
 	ab.Spec.Subjects = []iamv1alpha1.Subject{{User: &iamv1alpha1.PrincipalRef{ID: id}}}
@@ -40,7 +40,7 @@ func userAB(tn tenant, name, id string) *iamv1alpha1.AccessBinding {
 
 // afterCreation ждёт, пока объекты k8s, заведённые сейчас, станут моложе ab:
 // отметки времени — с точностью до секунды.
-func afterCreation(t *testing.T, ab *iamv1alpha1.AccessBinding) {
+func afterCreation(t *testing.T, ab *iamv1alpha1.IAMAccessBinding) {
 	t.Helper()
 	time.Sleep(time.Until(getAB(t, ab).CreationTimestamp.Add(time.Second + 100*time.Millisecond)))
 }
@@ -49,7 +49,7 @@ func afterCreation(t *testing.T, ab *iamv1alpha1.AccessBinding) {
 // они стоят сейчас, при текущем поколении spec: запись о каждой называет uid
 // и metadata.generation и политики, и привязки — те же, что у стоящих
 // объектов (признак, по которому платформа ставит rewitness).
-func seenGuard(t *testing.T, ab *iamv1alpha1.AccessBinding) {
+func seenGuard(t *testing.T, ab *iamv1alpha1.IAMAccessBinding) {
 	t.Helper()
 	ctx := context.Background()
 	eventually(t, waitReady, func() error {
@@ -76,7 +76,7 @@ func seenGuard(t *testing.T, ab *iamv1alpha1.AccessBinding) {
 }
 
 // witnessRecord — запись свидетельства ab о политике name.
-func witnessRecord(ab *iamv1alpha1.AccessBinding, name string) *iamv1alpha1.AdmissionPolicyUIDs {
+func witnessRecord(ab *iamv1alpha1.IAMAccessBinding, name string) *iamv1alpha1.AdmissionPolicyUIDs {
 	if ab.Status.AdmissionWitness == nil {
 		return nil
 	}
@@ -91,7 +91,7 @@ func witnessRecord(ab *iamv1alpha1.AccessBinding, name string) *iamv1alpha1.Admi
 // inForce переводит часы оператора за срок вступления в силу увиденных
 // версий политик и ждёт, что записи свидетельства каждого из abs закреплены:
 // ни одна не несёт pendingSince.
-func inForce(t *testing.T, abs ...*iamv1alpha1.AccessBinding) {
+func inForce(t *testing.T, abs ...*iamv1alpha1.IAMAccessBinding) {
 	t.Helper()
 	clk.SetTime(clk.Now().Add(testCfg.Policy.AdmissionEnforcementDelay.Duration + time.Second))
 	for _, ab := range abs {
@@ -207,10 +207,10 @@ func TestABAdmissionPolicyChangedInPlaceKeepsTheConfirmedBinding(t *testing.T) {
 	moved := userAB(tn, "guard-edit-moved", "usr-edit-moved")
 	twin := newAB(tn, "guard-edit-sa", "zot-edit", "registry.pusher", "abc123")
 	ids := map[string]string{}
-	for _, ab := range []*iamv1alpha1.AccessBinding{kept, moved, twin} {
+	for _, ab := range []*iamv1alpha1.IAMAccessBinding{kept, moved, twin} {
 		createAB(t, ab)
 	}
-	for _, ab := range []*iamv1alpha1.AccessBinding{kept, moved, twin} {
+	for _, ab := range []*iamv1alpha1.IAMAccessBinding{kept, moved, twin} {
 		ids[ab.Name] = waitABReady(t, ab).Status.ID
 	}
 
@@ -221,7 +221,7 @@ func TestABAdmissionPolicyChangedInPlaceKeepsTheConfirmedBinding(t *testing.T) {
 		t.Fatalf("no %s event for a binding whose spec changed under a policy changed in place", iamv1alpha1.ReasonAdmissionGuaranteeLost)
 	}
 	keep := func() error {
-		for _, ab := range []*iamv1alpha1.AccessBinding{kept, twin} {
+		for _, ab := range []*iamv1alpha1.IAMAccessBinding{kept, twin} {
 			if err := stillGranted(ab, ids[ab.Name]); err != nil {
 				return err
 			}
@@ -262,7 +262,7 @@ func TestABWitnessIsKeptBeforeTheBindingNeedsTheGuarantee(t *testing.T) {
 	reserve(t, tn, "abc123")
 	readySA(t, tn, "zot-early")
 	// Роли разные: одинаковые выдачи одной учётке были бы одним ключом kaname.
-	named := func(name, role string) *iamv1alpha1.AccessBinding {
+	named := func(name, role string) *iamv1alpha1.IAMAccessBinding {
 		ab := newAB(tn, name, "zot-early", role, "abc123")
 		ab.Annotations = map[string]string{iamv1alpha1.AnnotationCreatedBy: platformPrincipal}
 		ab.Spec.Scope.Type = iamv1alpha1.ScopeAccount
@@ -272,9 +272,9 @@ func TestABWitnessIsKeptBeforeTheBindingNeedsTheGuarantee(t *testing.T) {
 	createAB(t, early)
 	createAB(t, twin)
 	earlyID, twinID := waitABReady(t, early).Status.ID, waitABReady(t, twin).Status.ID
-	toWhole := func(ab *iamv1alpha1.AccessBinding) {
+	toWhole := func(ab *iamv1alpha1.IAMAccessBinding) {
 		patchObj(t, ab, func(o client.Object) {
-			o.(*iamv1alpha1.AccessBinding).Spec.Target = iamv1alpha1.Target{AllInScope: &iamv1alpha1.AllInScope{}}
+			o.(*iamv1alpha1.IAMAccessBinding).Spec.Target = iamv1alpha1.Target{AllInScope: &iamv1alpha1.AllInScope{}}
 		})
 	}
 
@@ -317,7 +317,7 @@ func TestABWitnessIsKeptForABindingThePolicyRefuses(t *testing.T) {
 	createAB(t, twin)
 	refusedForbidden(t, refusedAB)
 	waitABReady(t, twin)
-	for _, ab := range []*iamv1alpha1.AccessBinding{twin, refusedAB} {
+	for _, ab := range []*iamv1alpha1.IAMAccessBinding{twin, refusedAB} {
 		eventually(t, waitReady, func() error {
 			if w := getAB(t, ab).Status.AdmissionWitness; w == nil || len(w.Policies) != len(testCfg.Policy.AdmissionGuard) {
 				return fmt.Errorf("%s: admission witness %+v, want a record per policy of %v", ab.Name, w, testCfg.Policy.AdmissionGuard)
@@ -372,7 +372,7 @@ func TestABOrphanDeletionWithdrawsAForbiddenBinding(t *testing.T) {
 	tn := newTenant(t, true)
 	reserve(t, tn, "abc123")
 	readySA(t, tn, "zot-orphan")
-	orphan := func(ab *iamv1alpha1.AccessBinding) *iamv1alpha1.AccessBinding {
+	orphan := func(ab *iamv1alpha1.IAMAccessBinding) *iamv1alpha1.IAMAccessBinding {
 		ab.Spec.DeletionPolicy = iamv1alpha1.DeletionPolicyOrphan
 		return ab
 	}
@@ -381,7 +381,7 @@ func TestABOrphanDeletionWithdrawsAForbiddenBinding(t *testing.T) {
 	lost.Annotations[iamv1alpha1.AnnotationCreatedBy] = otherPlatform
 	unseen := orphan(userAB(tn, "orphan-unseen", "usr-unseen"))
 	kept := orphan(newAB(tn, "orphan-kept", "zot-orphan", "registry.pusher", "abc123"))
-	all := []*iamv1alpha1.AccessBinding{retried, lost, unseen, kept}
+	all := []*iamv1alpha1.IAMAccessBinding{retried, lost, unseen, kept}
 	ids := map[string]string{}
 	for _, ab := range all {
 		createAB(t, ab)
@@ -394,7 +394,7 @@ func TestABOrphanDeletionWithdrawsAForbiddenBinding(t *testing.T) {
 	if err := k8s.Delete(context.Background(), unseen); err != nil {
 		t.Fatal(err)
 	}
-	failing := []*iamv1alpha1.AccessBinding{retried, lost}
+	failing := []*iamv1alpha1.IAMAccessBinding{retried, lost}
 	for _, ab := range failing {
 		fakeK.Fail("POST", "^/iam/v1/accessBindings/"+ids[ab.Name]+":revoke$", codes.Unavailable, 4)
 	}
@@ -425,7 +425,7 @@ func TestABOrphanDeletionWithdrawsAForbiddenBinding(t *testing.T) {
 			t.Fatalf("precondition: %s is to be deleted while its revoke fails, yet its binding is %s", ab.Name, got)
 		}
 	}
-	for _, ab := range []*iamv1alpha1.AccessBinding{retried, lost, kept} {
+	for _, ab := range []*iamv1alpha1.IAMAccessBinding{retried, lost, kept} {
 		if err := k8s.Delete(context.Background(), ab); err != nil {
 			t.Fatal(err)
 		}
@@ -433,7 +433,7 @@ func TestABOrphanDeletionWithdrawsAForbiddenBinding(t *testing.T) {
 	for _, ab := range all {
 		waitGone(t, ab)
 	}
-	for _, ab := range []*iamv1alpha1.AccessBinding{retried, lost, unseen} {
+	for _, ab := range []*iamv1alpha1.IAMAccessBinding{retried, lost, unseen} {
 		if got := remoteAB(ids[ab.Name]).GetStatus(); got != iamv1.AccessBinding_REVOKED {
 			t.Errorf("%s: Orphan deletion left the forbidden binding %s %s", ab.Name, ids[ab.Name], got)
 		}
@@ -542,7 +542,7 @@ func TestABWitnessWriteLosesToAConcurrentSpecChange(t *testing.T) {
 			return c.Get(ctx, key, obj, opts...)
 		},
 	})
-	r := &AccessBindingReconciler{Client: k8s, Mapper: k8s.RESTMapper(), Reader: reader, Deps: &Deps{
+	r := &IAMAccessBindingReconciler{Client: k8s, Mapper: k8s.RESTMapper(), Reader: reader, Deps: &Deps{
 		Kaname: kanameCli, Vault: vaultCli, Config: testCfg, Recorder: recorded, Clock: clk, DriftInterval: time.Minute, Seal: testSeal,
 	}}
 	pass := func(i int) {

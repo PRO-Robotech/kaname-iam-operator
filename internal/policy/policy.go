@@ -56,7 +56,7 @@ type Violation struct {
 func (v *Violation) Error() string { return v.Reason + ": " + v.Message }
 
 // Evaluate проверяет роль и субъектов выдачи по конфигурации. nil — разрешено.
-func Evaluate(p config.Policy, ab *iamv1alpha1.AccessBinding) *Violation {
+func Evaluate(p config.Policy, ab *iamv1alpha1.IAMAccessBinding) *Violation {
 	role := ab.Spec.RoleRef.Name
 	if !slices.Contains(p.AllowedRoles, role) {
 		return forbidden("role %q is not in the operator's allowed roles", role)

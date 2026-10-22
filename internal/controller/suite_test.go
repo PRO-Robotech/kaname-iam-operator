@@ -212,11 +212,11 @@ func startOperator(cfg *config.Config) (stop func(), err error) {
 		cancel()
 		return nil, fmt.Errorf("indexes: %w", err)
 	}
-	if err := SetupServiceAccountReconciler(mgr, deps); err != nil {
+	if err := SetupIAMServiceAccountReconciler(mgr, deps); err != nil {
 		cancel()
 		return nil, fmt.Errorf("SA reconciler: %w", err)
 	}
-	if err := SetupAccessBindingReconciler(mgr, deps); err != nil {
+	if err := SetupIAMAccessBindingReconciler(mgr, deps); err != nil {
 		cancel()
 		return nil, fmt.Errorf("AB reconciler: %w", err)
 	}

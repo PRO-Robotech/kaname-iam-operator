@@ -42,7 +42,7 @@ import (
 // проход не идёт мимо пробы.
 
 type protoHarness struct {
-	r        *ServiceAccountReconciler
+	r        *IAMServiceAccountReconciler
 	c        client.Client
 	k        *kanamefake.Server
 	v        *vaultfake.Server
@@ -111,20 +111,20 @@ delivery:
 	sa.Spec.Keys[0].Rotation = iamv1alpha1.KeyRotation{RenewBeforeSeconds: ptr.To[int64](1800), OverlapSeconds: ptr.To[int64](600)}
 	h.key = client.ObjectKeyFromObject(sa)
 	h.c = fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns, sa).
-		WithStatusSubresource(&iamv1alpha1.ServiceAccount{}).
-		WithIndex(&iamv1alpha1.AccessBinding{}, indexBindingSA, func(o client.Object) []string {
-			return referencedServiceAccounts(o.(*iamv1alpha1.AccessBinding))
+		WithStatusSubresource(&iamv1alpha1.IAMServiceAccount{}).
+		WithIndex(&iamv1alpha1.IAMAccessBinding{}, indexBindingSA, func(o client.Object) []string {
+			return referencedServiceAccounts(o.(*iamv1alpha1.IAMAccessBinding))
 		}).
 		WithInterceptorFuncs(interceptor.Funcs{
 			SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
 				if h.failNext.Load() > 0 {
 					h.failNext.Add(-1)
-					return apierrors.NewConflict(schema.GroupResource{Group: "iam.kaname.in-cloud.io", Resource: "serviceaccounts"}, obj.GetName(), fmt.Errorf("injected"))
+					return apierrors.NewConflict(schema.GroupResource{Group: "iam.kaname.in-cloud.io", Resource: "iamserviceaccounts"}, obj.GetName(), fmt.Errorf("injected"))
 				}
 				return c.SubResource(sub).Update(ctx, obj, opts...)
 			},
 		}).Build()
-	h.r = &ServiceAccountReconciler{Client: h.c, Deps: &Deps{
+	h.r = &IAMServiceAccountReconciler{Client: h.c, Deps: &Deps{
 		Kaname: kc, Vault: vc, Config: cfg, Recorder: &events.FakeRecorder{}, Clock: h.clk, DriftInterval: time.Minute,
 	}}
 	return h
@@ -148,16 +148,16 @@ func (h *protoHarness) settle(t *testing.T) ctrl.Result {
 	return res
 }
 
-func (h *protoHarness) sa(t *testing.T) *iamv1alpha1.ServiceAccount {
+func (h *protoHarness) sa(t *testing.T) *iamv1alpha1.IAMServiceAccount {
 	t.Helper()
-	out := &iamv1alpha1.ServiceAccount{}
+	out := &iamv1alpha1.IAMServiceAccount{}
 	if err := h.c.Get(context.Background(), h.key, out); err != nil {
 		t.Fatal(err)
 	}
 	return out
 }
 
-func (h *protoHarness) setStatus(t *testing.T, mutate func(*iamv1alpha1.ServiceAccountStatus)) {
+func (h *protoHarness) setStatus(t *testing.T, mutate func(*iamv1alpha1.IAMServiceAccountStatus)) {
 	t.Helper()
 	cur := h.sa(t)
 	mutate(&cur.Status)
@@ -180,7 +180,7 @@ func (h *protoHarness) path() string {
 	return fmt.Sprintf("clusters/%s/namespaces/%s/apps/docker-registry/abc123/robots/zot-ci/push", clusterName, protoNS)
 }
 
-func (h *protoHarness) ready(t *testing.T) *iamv1alpha1.ServiceAccount {
+func (h *protoHarness) ready(t *testing.T) *iamv1alpha1.IAMServiceAccount {
 	t.Helper()
 	h.settle(t)
 	sa := h.sa(t)
@@ -211,7 +211,7 @@ func TestKeyProtocolFinishesFromVaultAfterACrashBeforeStatus(t *testing.T) {
 		vaultUsername: k, vaultKeyID: k, vaultPassword: "kacho_x", vaultSAID: sa.Status.ID, vaultNonce: "n-crash",
 		vaultOwnerUID: "uid-zot-ci", vaultCluster: clusterName, vaultKeyName: "push",
 	})
-	h.setStatus(t, func(st *iamv1alpha1.ServiceAccountStatus) {
+	h.setStatus(t, func(st *iamv1alpha1.IAMServiceAccountStatus) {
 		st.Keys[0].Issuing = &iamv1alpha1.KeyIssuing{Nonce: "n-crash", At: metav1.NewTime(h.clk.Now())}
 	})
 	issues := h.issueCalls()
@@ -236,7 +236,7 @@ func TestKeyProtocolLostSecretWaitsTheGraceThenReissues(t *testing.T) {
 	old := sa.Status.KeyStatusByName("push").KeyID
 	lost := h.k.PutKey(&iamv1.ServiceAccountOAuthClient{SvaId: sa.Status.ID, Labels: h.ownKeyLabels("n-lost"),
 		CredentialKind: iamv1.CredentialKind_CREDENTIAL_KIND_SECRET, ExpiresAt: tsOf(h.clk.Now().Add(2 * time.Hour))})
-	h.setStatus(t, func(st *iamv1alpha1.ServiceAccountStatus) {
+	h.setStatus(t, func(st *iamv1alpha1.IAMServiceAccountStatus) {
 		st.Keys[0].Issuing = &iamv1alpha1.KeyIssuing{Nonce: "n-lost", At: metav1.NewTime(h.clk.Now())}
 	})
 	issues := h.issueCalls()
@@ -297,7 +297,7 @@ func TestKeyProtocolIssuesWithTheRecordedNonce(t *testing.T) {
 	id := h.k.PutServiceAccount(&iamv1.ServiceAccount{AccountId: h.account, Name: "zot-ci", Enabled: true, Description: "CI robot",
 		Labels: map[string]string{iamv1alpha1.LabelOwnerUID: "uid-zot-ci", iamv1alpha1.LabelCluster: clusterName,
 			iamv1alpha1.LabelRef: protoNS + ".zot-ci", "registry": "abc123"}})
-	h.setStatus(t, func(st *iamv1alpha1.ServiceAccountStatus) {
+	h.setStatus(t, func(st *iamv1alpha1.IAMServiceAccountStatus) {
 		st.ID, st.AccountID = id, h.account
 		st.Keys = []iamv1alpha1.KeyStatus{{Name: "push", Issuing: &iamv1alpha1.KeyIssuing{Nonce: "n-recorded", At: metav1.NewTime(h.clk.Now())}}}
 	})
@@ -358,7 +358,7 @@ func TestKeyProtocolDoesNotIssueWhileVaultIsDown(t *testing.T) {
 	id := h.k.PutServiceAccount(&iamv1.ServiceAccount{AccountId: h.account, Name: "zot-ci", Enabled: true, Description: "CI robot",
 		Labels: map[string]string{iamv1alpha1.LabelOwnerUID: "uid-zot-ci", iamv1alpha1.LabelCluster: clusterName,
 			iamv1alpha1.LabelRef: protoNS + ".zot-ci", "registry": "abc123"}})
-	h.setStatus(t, func(st *iamv1alpha1.ServiceAccountStatus) { st.ID, st.AccountID = id, h.account })
+	h.setStatus(t, func(st *iamv1alpha1.IAMServiceAccountStatus) { st.ID, st.AccountID = id, h.account })
 	h.v.FailNext(100)
 	for range 3 {
 		_, _ = h.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: h.key})
@@ -457,7 +457,7 @@ func TestKeyProtocolDeletionLeavesAForeignRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.settle(t)
-	if err := h.c.Get(context.Background(), h.key, &iamv1alpha1.ServiceAccount{}); !apierrors.IsNotFound(err) {
+	if err := h.c.Get(context.Background(), h.key, &iamv1alpha1.IAMServiceAccount{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("CR still present: %v", err)
 	}
 	if data, _ := h.v.Get(vaultMount, h.path()); !sameRecord(data, foreignRecord()) {

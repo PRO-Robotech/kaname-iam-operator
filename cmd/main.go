@@ -1,7 +1,7 @@
 // Copyright (c) PRO-Robotech
 // SPDX-License-Identifier: Apache-2.0
 
-// Command manager — kaname-iam-operator: CR ServiceAccount и AccessBinding
+// Command manager — kaname-iam-operator: CR IAMServiceAccount и IAMAccessBinding
 // группы iam.kaname.in-cloud.io отражаются в учётки и выдачи kaname IAM.
 package main
 
@@ -183,10 +183,10 @@ func run() error {
 	if err := controller.SetupIndexes(ctx, mgr); err != nil {
 		return err
 	}
-	if err := controller.SetupServiceAccountReconciler(mgr, deps); err != nil {
+	if err := controller.SetupIAMServiceAccountReconciler(mgr, deps); err != nil {
 		return err
 	}
-	if err := controller.SetupAccessBindingReconciler(mgr, deps); err != nil {
+	if err := controller.SetupIAMAccessBindingReconciler(mgr, deps); err != nil {
 		return err
 	}
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

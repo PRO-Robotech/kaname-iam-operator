@@ -21,10 +21,10 @@ import (
 
 const waitReady = 20 * time.Second
 
-func newSA(tn tenant, name string, keys ...iamv1alpha1.KeySpec) *iamv1alpha1.ServiceAccount {
-	return &iamv1alpha1.ServiceAccount{
+func newSA(tn tenant, name string, keys ...iamv1alpha1.KeySpec) *iamv1alpha1.IAMServiceAccount {
+	return &iamv1alpha1.IAMServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: tn.ns},
-		Spec: iamv1alpha1.ServiceAccountSpec{
+		Spec: iamv1alpha1.IAMServiceAccountSpec{
 			Name:        name,
 			Description: "CI robot",
 			Labels:      map[string]string{"registry": "abc123"},
@@ -42,7 +42,7 @@ func pushKey() iamv1alpha1.KeySpec {
 	}
 }
 
-func createSA(t *testing.T, sa *iamv1alpha1.ServiceAccount) {
+func createSA(t *testing.T, sa *iamv1alpha1.IAMServiceAccount) {
 	t.Helper()
 	if err := k8s.Create(context.Background(), sa); err != nil {
 		t.Fatalf("create SA: %v", err)
@@ -56,18 +56,18 @@ func forceDelete(t *testing.T, obj client.Object) {
 	_ = k8s.Delete(context.Background(), obj)
 }
 
-func getSA(t *testing.T, sa *iamv1alpha1.ServiceAccount) *iamv1alpha1.ServiceAccount {
+func getSA(t *testing.T, sa *iamv1alpha1.IAMServiceAccount) *iamv1alpha1.IAMServiceAccount {
 	t.Helper()
-	out := &iamv1alpha1.ServiceAccount{}
+	out := &iamv1alpha1.IAMServiceAccount{}
 	if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(sa), out); err != nil {
 		t.Fatalf("get SA: %v", err)
 	}
 	return out
 }
 
-func waitSAReady(t *testing.T, sa *iamv1alpha1.ServiceAccount) *iamv1alpha1.ServiceAccount {
+func waitSAReady(t *testing.T, sa *iamv1alpha1.IAMServiceAccount) *iamv1alpha1.IAMServiceAccount {
 	t.Helper()
-	var cur *iamv1alpha1.ServiceAccount
+	var cur *iamv1alpha1.IAMServiceAccount
 	eventually(t, waitReady, func() error {
 		cur = getSA(t, sa)
 		if cur.Status.ObservedGeneration != cur.Generation {
@@ -282,7 +282,7 @@ func TestSASpecDisableAndUpdateReachKaname(t *testing.T) {
 	createSA(t, sa)
 	cur := waitSAReady(t, sa)
 	patchObj(t, sa, func(o client.Object) {
-		s := o.(*iamv1alpha1.ServiceAccount)
+		s := o.(*iamv1alpha1.IAMServiceAccount)
 		s.Spec.Description = "CI robot v2"
 		s.Spec.Labels = map[string]string{"registry": "abc123", "team": "a"}
 		s.Spec.Enabled = ptr.To(false)
@@ -313,7 +313,7 @@ func TestSADisabledBySpecIsEnabledAgainBySpec(t *testing.T) {
 	sa := newSA(tn, "zot-toggle")
 	createSA(t, sa)
 	cur := waitSAReady(t, sa)
-	patchObj(t, sa, func(o client.Object) { o.(*iamv1alpha1.ServiceAccount).Spec.Enabled = ptr.To(false) })
+	patchObj(t, sa, func(o client.Object) { o.(*iamv1alpha1.IAMServiceAccount).Spec.Enabled = ptr.To(false) })
 	eventually(t, waitReady, func() error {
 		if remoteSA(t, cur.Status.ID).GetEnabled() {
 			return fmt.Errorf("not disabled in kaname")
@@ -324,7 +324,7 @@ func TestSADisabledBySpecIsEnabledAgainBySpec(t *testing.T) {
 		}
 		return wantCondition(c.Status.Conditions, iamv1alpha1.ConditionReady, metav1.ConditionTrue, iamv1alpha1.ReasonDisabled)
 	})
-	patchObj(t, sa, func(o client.Object) { o.(*iamv1alpha1.ServiceAccount).Spec.Enabled = ptr.To(true) })
+	patchObj(t, sa, func(o client.Object) { o.(*iamv1alpha1.IAMServiceAccount).Spec.Enabled = ptr.To(true) })
 	eventually(t, waitReady, func() error {
 		if !remoteSA(t, cur.Status.ID).GetEnabled() {
 			return fmt.Errorf("not enabled again in kaname")
@@ -472,7 +472,7 @@ func TestSADeletionWaitsForBindingsThenCleansEverything(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, waitReady, func() error {
-		err := k8s.Get(context.Background(), client.ObjectKeyFromObject(sa), &iamv1alpha1.ServiceAccount{})
+		err := k8s.Get(context.Background(), client.ObjectKeyFromObject(sa), &iamv1alpha1.IAMServiceAccount{})
 		if !apierrors.IsNotFound(err) {
 			return fmt.Errorf("SA CR still present: %w", err)
 		}
@@ -514,7 +514,7 @@ func TestSAOrphanDeletionLeavesKanameUntouched(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, waitReady, func() error {
-		if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(sa), &iamv1alpha1.ServiceAccount{}); !apierrors.IsNotFound(err) {
+		if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(sa), &iamv1alpha1.IAMServiceAccount{}); !apierrors.IsNotFound(err) {
 			return fmt.Errorf("still present: %w", err)
 		}
 		return nil

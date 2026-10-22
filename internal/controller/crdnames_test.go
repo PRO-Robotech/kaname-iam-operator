@@ -110,7 +110,7 @@ func TestCRDKindsCarryTheIAMPrefixAndCollideWithNothing(t *testing.T) {
 	}
 	// Предпосылка: перепись прочитала и свои ресурсы, и core ServiceAccount —
 	// иначе «совпадений нет» значило бы «смотреть было не на что».
-	t.Logf("перепись: ресурсов %d, групп iam.kaname.in-cloud.io — %d, core serviceaccounts — %v", len(all), len(own), coreSA)
+	t.Logf("перепись: ресурсов %d, группы %s — %d, core serviceaccounts — %v", len(all), group, len(own), coreSA)
 	if len(own) != 2 || !coreSA {
 		t.Fatalf("предпосылка не выполнена: ресурсов группы %s %d (ожидалось 2), core serviceaccounts найден: %v", group, len(own), coreSA)
 	}
@@ -163,18 +163,19 @@ func TestCRDKindsCarryTheIAMPrefixAndCollideWithNothing(t *testing.T) {
 // множественным и единственным числом) и молчит на законном близнеце
 // (тот же ресурс с префиксом IAM) и на соседе своей группы.
 func TestCRDNameCollisionJudgeFiresAndStaysSilent(t *testing.T) {
+	g := iamv1alpha1.GroupVersion.Group
 	core := crdName{group: "", kind: "ServiceAccount", plural: "serviceaccounts", singular: "serviceaccount", short: []string{"sa"}}
-	sibling := crdName{group: "iam.kaname.in-cloud.io", kind: "IAMAccessBinding", plural: "iamaccessbindings", singular: "iamaccessbinding", short: []string{"iamab"}}
+	sibling := crdName{group: g, kind: "IAMAccessBinding", plural: "iamaccessbindings", singular: "iamaccessbinding", short: []string{"iamab"}}
 
-	defect := crdName{group: "iam.kaname.in-cloud.io", kind: "ServiceAccount", plural: "serviceaccounts", singular: "serviceaccount", short: []string{"ksa"}}
+	defect := crdName{group: g, kind: "ServiceAccount", plural: "serviceaccounts", singular: "serviceaccount", short: nil}
 	if got, want := collisions(defect, []crdName{core, sibling}), []string{"serviceaccount ↔ /serviceaccounts", "serviceaccounts ↔ /serviceaccounts"}; !slices.Equal(got, want) {
 		t.Errorf("дефект: совпадения %v, ожидались %v", got, want)
 	}
-	shortOnly := crdName{group: "iam.kaname.in-cloud.io", kind: "IAMServiceAccount", plural: "iamserviceaccounts", singular: "iamserviceaccount", short: []string{"sa"}}
+	shortOnly := crdName{group: g, kind: "IAMServiceAccount", plural: "iamserviceaccounts", singular: "iamserviceaccount", short: []string{"sa"}}
 	if got := collisions(shortOnly, []crdName{core}); !slices.Equal(got, []string{"sa ↔ /serviceaccounts"}) {
 		t.Errorf("короткое имя core: совпадения %v, ожидалось одно sa", got)
 	}
-	twin := crdName{group: "iam.kaname.in-cloud.io", kind: "IAMServiceAccount", plural: "iamserviceaccounts", singular: "iamserviceaccount", short: []string{"iamsa"}}
+	twin := crdName{group: g, kind: "IAMServiceAccount", plural: "iamserviceaccounts", singular: "iamserviceaccount", short: []string{"iamsa"}}
 	if got := collisions(twin, []crdName{core, sibling}); len(got) != 0 {
 		t.Errorf("законный близнец: совпадения %v, ожидалось ни одного", got)
 	}

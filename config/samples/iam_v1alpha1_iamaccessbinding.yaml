@@ -1,6 +1,6 @@
 # Выдача registry.pusher учётке CI-робота на реестр abc123 в проекте арендатора.
 apiVersion: iam.kaname.in-cloud.io/v1alpha1
-kind: AccessBinding
+kind: IAMAccessBinding
 metadata:
   name: zot-abc123-ci-pusher
   namespace: cust01

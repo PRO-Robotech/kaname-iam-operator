@@ -171,22 +171,22 @@ func as(t *testing.T, user string) client.Client {
 
 var seq int
 
-func sa() *iamv1alpha1.ServiceAccount {
+func sa() *iamv1alpha1.IAMServiceAccount {
 	seq++
-	return &iamv1alpha1.ServiceAccount{
+	return &iamv1alpha1.IAMServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("sa-%d", seq), Namespace: tenantNS},
-		Spec:       iamv1alpha1.ServiceAccountSpec{Name: fmt.Sprintf("zot-%d", seq)},
+		Spec:       iamv1alpha1.IAMServiceAccountSpec{Name: fmt.Sprintf("zot-%d", seq)},
 	}
 }
 
-func ab(role string, subjects ...iamv1alpha1.Subject) *iamv1alpha1.AccessBinding {
+func ab(role string, subjects ...iamv1alpha1.Subject) *iamv1alpha1.IAMAccessBinding {
 	seq++
 	if len(subjects) == 0 {
 		subjects = []iamv1alpha1.Subject{{ServiceAccountRef: &iamv1alpha1.LocalServiceAccountRef{Name: "zot"}}}
 	}
-	return &iamv1alpha1.AccessBinding{
+	return &iamv1alpha1.IAMAccessBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("ab-%d", seq), Namespace: tenantNS},
-		Spec: iamv1alpha1.AccessBindingSpec{
+		Spec: iamv1alpha1.IAMAccessBindingSpec{
 			Subjects: subjects, RoleRef: iamv1alpha1.RoleRef{Name: role},
 			Target: iamv1alpha1.Target{Resources: []iamv1alpha1.ResourceRef{{Type: "registry.registries", ID: "abc123"}}},
 		},
@@ -232,7 +232,7 @@ func TestOperatorChangesOnlyFinalizersAndWritesStatus(t *testing.T) {
 	obj := sa()
 	admitted(t, as(t, registryOperator).Create(ctx, obj))
 	op := as(t, operatorUser)
-	cur := &iamv1alpha1.ServiceAccount{}
+	cur := &iamv1alpha1.IAMServiceAccount{}
 	if err := op.Get(ctx, client.ObjectKeyFromObject(obj), cur); err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +246,7 @@ func TestOperatorChangesOnlyFinalizersAndWritesStatus(t *testing.T) {
 	fin.Finalizers = append(fin.Finalizers, iamv1alpha1.Finalizer)
 	admitted(t, op.Update(ctx, fin))
 
-	st := &iamv1alpha1.ServiceAccount{}
+	st := &iamv1alpha1.IAMServiceAccount{}
 	_ = op.Get(ctx, client.ObjectKeyFromObject(obj), st)
 	st.Status.ID = "sva1"
 	admitted(t, op.Status().Update(ctx, st))
@@ -275,7 +275,7 @@ func TestBindingRoleSubjectsAndPrincipals(t *testing.T) {
 // перечнем от писателя.
 func TestAllInScopeOnlyFromThePlatform(t *testing.T) {
 	ctx := context.Background()
-	whole := func() *iamv1alpha1.AccessBinding {
+	whole := func() *iamv1alpha1.IAMAccessBinding {
 		b := ab("registry.pusher")
 		b.Spec.Scope.Type = iamv1alpha1.ScopeAccount
 		b.Spec.Target = iamv1alpha1.Target{AllInScope: &iamv1alpha1.AllInScope{}}
@@ -288,7 +288,7 @@ func TestAllInScopeOnlyFromThePlatform(t *testing.T) {
 	named := ab("registry.pusher")
 	admitted(t, w.Create(ctx, named))
 	flip := func(c client.Client) error {
-		cur := &iamv1alpha1.AccessBinding{}
+		cur := &iamv1alpha1.IAMAccessBinding{}
 		if err := c.Get(ctx, client.ObjectKeyFromObject(named), cur); err != nil {
 			t.Fatal(err)
 		}
@@ -309,9 +309,9 @@ func TestOperatorFinalizesPlatformOnlyBindings(t *testing.T) {
 	whole := ab("registry.pusher")
 	whole.Spec.Target = iamv1alpha1.Target{AllInScope: &iamv1alpha1.AllInScope{}}
 	op := as(t, operatorUser)
-	for _, obj := range []*iamv1alpha1.AccessBinding{user, whole} {
+	for _, obj := range []*iamv1alpha1.IAMAccessBinding{user, whole} {
 		admitted(t, as(t, platform).Create(ctx, obj))
-		cur := &iamv1alpha1.AccessBinding{}
+		cur := &iamv1alpha1.IAMAccessBinding{}
 		if err := op.Get(ctx, client.ObjectKeyFromObject(obj), cur); err != nil {
 			t.Fatal(err)
 		}
@@ -339,7 +339,7 @@ func TestResyncAnnotationOnlyFromThePlatform(t *testing.T) {
 	obj := sa()
 	admitted(t, as(t, registryOperator).Create(ctx, obj))
 	set := func(c client.Client, v string) error {
-		cur := &iamv1alpha1.ServiceAccount{}
+		cur := &iamv1alpha1.IAMServiceAccount{}
 		if err := c.Get(ctx, client.ObjectKeyFromObject(obj), cur); err != nil {
 			t.Fatal(err)
 		}
@@ -359,7 +359,7 @@ func TestRewitnessAnnotationOnlyFromThePlatform(t *testing.T) {
 	obj := ab("registry.pusher")
 	admitted(t, as(t, registryOperator).Create(ctx, obj))
 	set := func(c client.Client, v string) error {
-		cur := &iamv1alpha1.AccessBinding{}
+		cur := &iamv1alpha1.IAMAccessBinding{}
 		if err := c.Get(ctx, client.ObjectKeyFromObject(obj), cur); err != nil {
 			t.Fatal(err)
 		}
@@ -379,7 +379,7 @@ func TestCreatedByAnnotationIsAuthentic(t *testing.T) {
 	own := sa()
 	own.Annotations = map[string]string{iamv1alpha1.AnnotationCreatedBy: registryOperator}
 	admitted(t, as(t, registryOperator).Create(ctx, own))
-	cur := &iamv1alpha1.ServiceAccount{}
+	cur := &iamv1alpha1.IAMServiceAccount{}
 	if err := as(t, platform).Get(ctx, client.ObjectKeyFromObject(own), cur); err != nil {
 		t.Fatal(err)
 	}
@@ -634,7 +634,7 @@ func TestChartAdmissionGuardIsSatisfiedByItsOwnPolicies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created := &iamv1alpha1.AccessBinding{ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(time.Now().Add(time.Minute)), Generation: 1}}
+	created := &iamv1alpha1.IAMAccessBinding{ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(time.Now().Add(time.Minute)), Generation: 1}}
 	g, err := policy.CheckAdmissionGuarantee(context.Background(), admin, c.Policy, seal, created, time.Now())
 	if v := g.Violation; err != nil || v != nil {
 		t.Fatalf("the operator refuses the chart's own admission policies: %v %v", v, err)
@@ -707,7 +707,7 @@ func TestChartValuesUpgradeKeepsAPermissibleBinding(t *testing.T) {
 	}
 	t.Cleanup(func() { upgrade(t, admin, rendered) })
 	ctx := context.Background()
-	verdict := func(c *config.Config, ab *iamv1alpha1.AccessBinding, now time.Time) (*policy.Violation, *iamv1alpha1.AdmissionWitness) {
+	verdict := func(c *config.Config, ab *iamv1alpha1.IAMAccessBinding, now time.Time) (*policy.Violation, *iamv1alpha1.AdmissionWitness) {
 		t.Helper()
 		if v := policy.Evaluate(c.Policy, ab); v != nil {
 			return v, ab.Status.AdmissionWitness
@@ -720,11 +720,11 @@ func TestChartValuesUpgradeKeepsAPermissibleBinding(t *testing.T) {
 	}
 	base := renderedConfig(t, rendered)
 	// Выдача пользователю от принципала платформы, созданная позже политик.
-	ab := &iamv1alpha1.AccessBinding{
+	ab := &iamv1alpha1.IAMAccessBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: "upgraded", Namespace: tenantNS, Generation: 1,
 			CreationTimestamp: metav1.NewTime(time.Now().Add(time.Minute)),
 			Annotations:       map[string]string{iamv1alpha1.AnnotationCreatedBy: platform}},
-		Spec: iamv1alpha1.AccessBindingSpec{
+		Spec: iamv1alpha1.IAMAccessBindingSpec{
 			Subjects: []iamv1alpha1.Subject{{User: &iamv1alpha1.PrincipalRef{ID: "usr-upgrade"}}},
 			RoleRef:  iamv1alpha1.RoleRef{Name: "registry.pusher"},
 			Target:   iamv1alpha1.Target{Resources: []iamv1alpha1.ResourceRef{{Type: "registry.registries", ID: "abc123"}}},

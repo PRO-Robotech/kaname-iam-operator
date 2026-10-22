@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -102,6 +103,24 @@ func TestInstallAndOperate(t *testing.T) {
 		kubectl(t, "-n", ns, "rollout", "status", "deploy/kaname-iam-operator", "--timeout=180s")
 	})
 
+	// Виды группы адресуются kubectl без группы и ни с чем не совпадают:
+	// короткие имена разрешаются, перепись группы — ровно два ресурса с
+	// префиксом IAM, а serviceaccount по-прежнему — core v1.
+	t.Run("kinds resolve without the group", func(t *testing.T) {
+		got := strings.Fields(kubectl(t, "api-resources", "--api-group=iam.kaname.in-cloud.io", "-o", "name"))
+		slices.Sort(got)
+		want := []string{"iamaccessbindings.iam.kaname.in-cloud.io", "iamserviceaccounts.iam.kaname.in-cloud.io"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("api-resources of the group = %v, want %v", got, want)
+		}
+		for _, short := range []string{"iamsa", "iamab", "iamserviceaccount", "iamaccessbinding"} {
+			kubectl(t, "get", short, "-A")
+		}
+		if v := kubectl(t, "-n", ns, "get", "serviceaccount", "kaname-iam-operator", "-o", "jsonpath={.apiVersion}"); strings.TrimSpace(v) != "v1" {
+			t.Fatalf("kubectl get serviceaccount resolves to %q, want core v1", v)
+		}
+	})
+
 	t.Run("exactly one leader", func(t *testing.T) {
 		eventually(t, 2*time.Minute, func() error {
 			out, err := kubectlTry("-n", ns, "get", "lease", "kaname-iam-operator.iam.kaname.in-cloud.io", "-o", "jsonpath={.spec.holderIdentity}")
@@ -155,7 +174,7 @@ func TestInstallAndOperate(t *testing.T) {
 		kubectl(t, "create", "namespace", tenant)
 		kubectl(t, "annotate", "namespace", tenant, "iam.kaname.in-cloud.io/account-id=acc-e2e", "iam.kaname.in-cloud.io/project-id=prj-e2e")
 		manifest := `apiVersion: iam.kaname.in-cloud.io/v1alpha1
-kind: ServiceAccount
+kind: IAMServiceAccount
 metadata: {name: e2e, namespace: ` + tenant + `}
 spec: {name: e2e-robot, deletionPolicy: Orphan}
 `
@@ -171,7 +190,7 @@ spec: {name: e2e-robot, deletionPolicy: Orphan}
 		// Оператор доводит CR до записанного status: финализатор и условия
 		// (kaname недостижим — Synced/Ready False с причиной повтора).
 		eventually(t, 3*time.Minute, func() error {
-			out, err := kubectlTry("-n", tenant, "get", "serviceaccounts.iam.kaname.in-cloud.io", "e2e",
+			out, err := kubectlTry("-n", tenant, "get", "iamserviceaccounts.iam.kaname.in-cloud.io", "e2e",
 				"-o", `jsonpath={.metadata.finalizers}{"|"}{.status.conditions[?(@.type=="Ready")].reason}`)
 			if err != nil {
 				return err
@@ -181,6 +200,6 @@ spec: {name: e2e-robot, deletionPolicy: Orphan}
 			}
 			return nil
 		})
-		kubectl(t, "--as", writer, "--as-group", "system:masters", "-n", tenant, "delete", "serviceaccounts.iam.kaname.in-cloud.io", "e2e", "--timeout=120s")
+		kubectl(t, "--as", writer, "--as-group", "system:masters", "-n", tenant, "delete", "iamserviceaccounts.iam.kaname.in-cloud.io", "e2e", "--timeout=120s")
 	})
 }

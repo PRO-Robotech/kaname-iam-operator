@@ -94,7 +94,7 @@ func TestABDeletedDuringCreateLeavesNoLiveBinding(t *testing.T) {
 			readySA(t, tn, "zot-race")
 			ab := newAB(tn, "race", "zot-race", "registry.pusher", "abc123")
 			fired := onceOn(t, "POST", "/iam/v1/accessBindings", tn.project, func() {
-				_ = k8s.Delete(context.Background(), &iamv1alpha1.AccessBinding{ObjectMeta: metav1.ObjectMeta{Name: ab.Name, Namespace: ab.Namespace}})
+				_ = k8s.Delete(context.Background(), &iamv1alpha1.IAMAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: ab.Name, Namespace: ab.Namespace}})
 			})
 			inMode(t, m.background)
 			createAB(t, ab)
@@ -138,11 +138,11 @@ func TestABTargetChangedDuringReplacementLeavesOneLiveBinding(t *testing.T) {
 			first := waitABReady(t, ab)
 			retarget := func(id string) {
 				patchObj(t, ab, func(o client.Object) {
-					o.(*iamv1alpha1.AccessBinding).Spec.Target.Resources[0].ID = id
+					o.(*iamv1alpha1.IAMAccessBinding).Spec.Target.Resources[0].ID = id
 				})
 			}
 			fired := onceOn(t, "POST", "/iam/v1/accessBindings", t1, func() {
-				cur := &iamv1alpha1.AccessBinding{}
+				cur := &iamv1alpha1.IAMAccessBinding{}
 				if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(ab), cur); err != nil {
 					return
 				}
@@ -197,7 +197,7 @@ func TestSADeletedDuringCreateLeavesNoAccount(t *testing.T) {
 			name := "zrace" + randSuffix()
 			sa := newSA(tn, name)
 			fired := onceOn(t, "POST", "/iam/v1/serviceAccounts", name, func() {
-				_ = k8s.Delete(context.Background(), &iamv1alpha1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: sa.Name, Namespace: sa.Namespace}})
+				_ = k8s.Delete(context.Background(), &iamv1alpha1.IAMServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: sa.Name, Namespace: sa.Namespace}})
 			})
 			inMode(t, m.background)
 			createSA(t, sa)
@@ -287,7 +287,7 @@ func installGuardPolicy(t *testing.T, name string) {
 			MatchConstraints: &admissionv1.MatchResources{ResourceRules: []admissionv1.NamedRuleWithOperations{{
 				RuleWithOperations: admissionv1.RuleWithOperations{
 					Operations: []admissionv1.OperationType{admissionv1.Create},
-					Rule:       admissionv1.Rule{APIGroups: []string{"iam.kaname.in-cloud.io"}, APIVersions: []string{"*"}, Resources: []string{"accessbindings"}},
+					Rule:       admissionv1.Rule{APIGroups: []string{"iam.kaname.in-cloud.io"}, APIVersions: []string{"*"}, Resources: []string{"iamaccessbindings"}},
 				},
 			}}},
 			Validations: []admissionv1.Validation{{Expression: "true"}},

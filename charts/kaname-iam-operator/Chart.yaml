@@ -1,6 +1,6 @@
 apiVersion: v2
 name: kaname-iam-operator
-description: Kubernetes operator for kaname IAM — ServiceAccount and AccessBinding (iam.kaname.in-cloud.io/v1alpha1)
+description: Kubernetes operator for kaname IAM — IAMServiceAccount and IAMAccessBinding (iam.kaname.in-cloud.io/v1alpha1)
 type: application
 version: 0.1.0
 appVersion: "0.1.0"

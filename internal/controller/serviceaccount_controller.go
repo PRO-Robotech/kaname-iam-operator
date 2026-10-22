@@ -31,35 +31,35 @@ import (
 )
 
 const (
-	kindSA = "ServiceAccount"
+	kindSA = "IAMServiceAccount"
 	// requeueNow — следующий проход сразу после записанного шага.
 	requeueNow = 100 * time.Millisecond
 	// deletionBlockedRecheck — пауза ожидания снятия ссылающихся выдач.
 	deletionBlockedRecheck = 5 * time.Second
 )
 
-// ServiceAccountReconciler отражает CR ServiceAccount в учётку kaname.
-type ServiceAccountReconciler struct {
+// IAMServiceAccountReconciler отражает CR IAMServiceAccount в учётку kaname.
+type IAMServiceAccountReconciler struct {
 	client.Client
 	*Deps
 }
 
-// +kubebuilder:rbac:groups=iam.kaname.in-cloud.io,resources=serviceaccounts,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=iam.kaname.in-cloud.io,resources=serviceaccounts/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=iam.kaname.in-cloud.io,resources=serviceaccounts/finalizers,verbs=update
+// +kubebuilder:rbac:groups=iam.kaname.in-cloud.io,resources=iamserviceaccounts,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=iam.kaname.in-cloud.io,resources=iamserviceaccounts/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=iam.kaname.in-cloud.io,resources=iamserviceaccounts/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
-// SetupServiceAccountReconciler регистрирует контроллер ServiceAccount.
-func SetupServiceAccountReconciler(mgr ctrl.Manager, d *Deps) error {
-	r := &ServiceAccountReconciler{Client: mgr.GetClient(), Deps: d}
+// SetupIAMServiceAccountReconciler регистрирует контроллер IAMServiceAccount.
+func SetupIAMServiceAccountReconciler(mgr ctrl.Manager, d *Deps) error {
+	r := &IAMServiceAccountReconciler{Client: mgr.GetClient(), Deps: d}
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&iamv1alpha1.ServiceAccount{}, builder.WithPredicates(specOrMetaChanged())).
+		For(&iamv1alpha1.IAMServiceAccount{}, builder.WithPredicates(specOrMetaChanged())).
 		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.forNamespace),
 			builder.WithPredicates(predicate.AnnotationChangedPredicate{})).
-		Watches(&iamv1alpha1.AccessBinding{}, handler.EnqueueRequestsFromMapFunc(r.forBinding)).
+		Watches(&iamv1alpha1.IAMAccessBinding{}, handler.EnqueueRequestsFromMapFunc(r.forBinding)).
 		WithOptions(d.controllerOptions()).
-		Named("serviceaccount").
+		Named("iamserviceaccount").
 		Complete(r)
 }
 
@@ -74,8 +74,8 @@ func specOrMetaChanged() predicate.Predicate {
 		})
 }
 
-func (r *ServiceAccountReconciler) forNamespace(ctx context.Context, obj client.Object) []reconcile.Request {
-	var list iamv1alpha1.ServiceAccountList
+func (r *IAMServiceAccountReconciler) forNamespace(ctx context.Context, obj client.Object) []reconcile.Request {
+	var list iamv1alpha1.IAMServiceAccountList
 	if err := r.List(ctx, &list, client.InNamespace(obj.GetName())); err != nil {
 		return nil
 	}
@@ -88,8 +88,8 @@ func (r *ServiceAccountReconciler) forNamespace(ctx context.Context, obj client.
 
 // forBinding будит учётки, на которые ссылается выдача: удаление учётки
 // ждёт снятия ссылающихся выдач.
-func (r *ServiceAccountReconciler) forBinding(_ context.Context, obj client.Object) []reconcile.Request {
-	ab, ok := obj.(*iamv1alpha1.AccessBinding)
+func (r *IAMServiceAccountReconciler) forBinding(_ context.Context, obj client.Object) []reconcile.Request {
+	ab, ok := obj.(*iamv1alpha1.IAMAccessBinding)
 	if !ok {
 		return nil
 	}
@@ -101,8 +101,8 @@ func (r *ServiceAccountReconciler) forBinding(_ context.Context, obj client.Obje
 }
 
 // Reconcile — один проход.
-func (r *ServiceAccountReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	sa := &iamv1alpha1.ServiceAccount{}
+func (r *IAMServiceAccountReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	sa := &iamv1alpha1.IAMServiceAccount{}
 	if err := r.Get(ctx, req.NamespacedName, sa); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -125,9 +125,9 @@ func (r *ServiceAccountReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 // saPass — состояние одного прохода.
 type saPass struct {
-	r     *ServiceAccountReconciler
-	sa    *iamv1alpha1.ServiceAccount
-	saved *iamv1alpha1.ServiceAccountStatus
+	r     *IAMServiceAccountReconciler
+	sa    *iamv1alpha1.IAMServiceAccount
+	saved *iamv1alpha1.IAMServiceAccountStatus
 	// resyncNow — аннотация resync-drift разрешает восстановление в этом проходе.
 	resyncNow bool
 	// keyDrift — имена ключей, отозванных в kaname мимо оператора.
@@ -533,7 +533,7 @@ func (p *saPass) finalize(ctx context.Context) (ctrl.Result, error) {
 			return res, err
 		}
 	}
-	var refs iamv1alpha1.AccessBindingList
+	var refs iamv1alpha1.IAMAccessBindingList
 	if err := p.r.List(ctx, &refs, client.InNamespace(sa.Namespace), client.MatchingFields{indexBindingSA: sa.Name}); err != nil {
 		return ctrl.Result{}, err
 	}

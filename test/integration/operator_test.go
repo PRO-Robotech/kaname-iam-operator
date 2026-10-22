@@ -107,12 +107,12 @@ func TestOperatorEndToEnd(t *testing.T) {
 }
 
 // e2eServiceAccount — CR SA → учётка с метками владения и ключ в Vault.
-func e2eServiceAccount(ctx context.Context, t *testing.T, ns *corev1.Namespace) (*iamv1alpha1.ServiceAccount, *iamv1alpha1.ServiceAccount) {
+func e2eServiceAccount(ctx context.Context, t *testing.T, ns *corev1.Namespace) (*iamv1alpha1.IAMServiceAccount, *iamv1alpha1.IAMServiceAccount) {
 	t.Helper()
 	saName := "kio-it-" + run + "-ci"
-	sa := &iamv1alpha1.ServiceAccount{
+	sa := &iamv1alpha1.IAMServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{Name: "ci", Namespace: ns.Name},
-		Spec: iamv1alpha1.ServiceAccountSpec{
+		Spec: iamv1alpha1.IAMServiceAccountSpec{
 			Name: saName, Description: "integration robot", Labels: map[string]string{"run": run},
 			Keys: []iamv1alpha1.KeySpec{{
 				Name: "push", TTLSeconds: 86400,
@@ -124,7 +124,7 @@ func e2eServiceAccount(ctx context.Context, t *testing.T, ns *corev1.Namespace) 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = k8s.Delete(context.Background(), sa) })
-	cur := &iamv1alpha1.ServiceAccount{}
+	cur := &iamv1alpha1.IAMServiceAccount{}
 	eventually(t, func() error {
 		if err := k8s.Get(ctx, client.ObjectKeyFromObject(sa), cur); err != nil {
 			return err
@@ -161,11 +161,11 @@ func e2eServiceAccount(ctx context.Context, t *testing.T, ns *corev1.Namespace) 
 }
 
 // e2eBinding — CR AB → выдача; смена цели — новая выдача, прежняя отозвана.
-func e2eBinding(ctx context.Context, t *testing.T, ns *corev1.Namespace, t1, t2 string) (*iamv1alpha1.AccessBinding, *iamv1alpha1.AccessBinding) {
+func e2eBinding(ctx context.Context, t *testing.T, ns *corev1.Namespace, t1, t2 string) (*iamv1alpha1.IAMAccessBinding, *iamv1alpha1.IAMAccessBinding) {
 	t.Helper()
-	ab := &iamv1alpha1.AccessBinding{
+	ab := &iamv1alpha1.IAMAccessBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: "ci-binding", Namespace: ns.Name},
-		Spec: iamv1alpha1.AccessBindingSpec{
+		Spec: iamv1alpha1.IAMAccessBindingSpec{
 			Subjects: []iamv1alpha1.Subject{{ServiceAccountRef: &iamv1alpha1.LocalServiceAccountRef{Name: "ci"}}},
 			RoleRef:  iamv1alpha1.RoleRef{Name: env["KIO_IT_ROLE"]},
 			Target:   iamv1alpha1.Target{Resources: []iamv1alpha1.ResourceRef{{Type: env["KIO_IT_TARGET_TYPE"], ID: t1}}},
@@ -175,7 +175,7 @@ func e2eBinding(ctx context.Context, t *testing.T, ns *corev1.Namespace, t1, t2 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = k8s.Delete(context.Background(), ab) })
-	abCur := &iamv1alpha1.AccessBinding{}
+	abCur := &iamv1alpha1.IAMAccessBinding{}
 	eventually(t, func() error {
 		if err := k8s.Get(ctx, client.ObjectKeyFromObject(ab), abCur); err != nil {
 			return err
@@ -215,7 +215,7 @@ func e2eBinding(ctx context.Context, t *testing.T, ns *corev1.Namespace, t1, t2 
 }
 
 // e2eDrift — учётка, отключённая в kaname, остаётся Drifted и не включается.
-func e2eDrift(ctx context.Context, t *testing.T, sa, cur *iamv1alpha1.ServiceAccount) {
+func e2eDrift(ctx context.Context, t *testing.T, sa, cur *iamv1alpha1.IAMServiceAccount) {
 	t.Helper()
 	var remote iamv1.ServiceAccount
 	// Учётка, отключённая в kaname, остаётся Drifted, оператор её не включает.
@@ -240,8 +240,8 @@ func e2eDrift(ctx context.Context, t *testing.T, sa, cur *iamv1alpha1.ServiceAcc
 }
 
 // e2eDeletion — удаление CR снимает выдачу, учётку, ключи и запись Vault.
-func e2eDeletion(ctx context.Context, t *testing.T, ns *corev1.Namespace, sa *iamv1alpha1.ServiceAccount, ab *iamv1alpha1.AccessBinding,
-	cur *iamv1alpha1.ServiceAccount, abCur *iamv1alpha1.AccessBinding) {
+func e2eDeletion(ctx context.Context, t *testing.T, ns *corev1.Namespace, sa *iamv1alpha1.IAMServiceAccount, ab *iamv1alpha1.IAMAccessBinding,
+	cur *iamv1alpha1.IAMServiceAccount, abCur *iamv1alpha1.IAMAccessBinding) {
 	t.Helper()
 	var remote iamv1.ServiceAccount
 	// Удаление: выдача отозвана, учётка, ключи и запись Vault сняты.
@@ -253,7 +253,7 @@ func e2eDeletion(ctx context.Context, t *testing.T, ns *corev1.Namespace, sa *ia
 		t.Fatal(err)
 	}
 	eventually(t, func() error {
-		for _, obj := range []client.Object{&iamv1alpha1.AccessBinding{ObjectMeta: ab.ObjectMeta}, &iamv1alpha1.ServiceAccount{ObjectMeta: sa.ObjectMeta}} {
+		for _, obj := range []client.Object{&iamv1alpha1.IAMAccessBinding{ObjectMeta: ab.ObjectMeta}, &iamv1alpha1.IAMServiceAccount{ObjectMeta: sa.ObjectMeta}} {
 			if err := k8s.Get(ctx, client.ObjectKeyFromObject(obj), obj); !apierrors.IsNotFound(err) {
 				return fmt.Errorf("%s still present: %w", obj.GetName(), err)
 			}

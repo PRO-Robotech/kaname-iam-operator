@@ -4,18 +4,18 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.23.0
-  name: accessbindings.iam.kaname.in-cloud.io
+  name: iamaccessbindings.iam.kaname.in-cloud.io
 spec:
   group: iam.kaname.in-cloud.io
   names:
     categories:
     - kaname-iam
-    kind: AccessBinding
-    listKind: AccessBindingList
-    plural: accessbindings
+    kind: IAMAccessBinding
+    listKind: IAMAccessBindingList
+    plural: iamaccessbindings
     shortNames:
-    - kab
-    singular: accessbinding
+    - iamab
+    singular: iamaccessbinding
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
@@ -37,7 +37,8 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: AccessBinding — выдача роли kaname IAM субъектам на цели в области.
+        description: IAMAccessBinding — выдача роли kaname IAM субъектам на цели в
+          области.
         properties:
           apiVersion:
             description: |-
@@ -57,7 +58,7 @@ spec:
           metadata:
             type: object
           spec:
-            description: AccessBindingSpec — желаемая выдача kaname.
+            description: IAMAccessBindingSpec — желаемая выдача kaname.
             properties:
               deletionPolicy:
                 default: Delete
@@ -137,11 +138,11 @@ spec:
                       - id
                       type: object
                     serviceAccountRef:
-                      description: ServiceAccountRef — CR ServiceAccount этого namespace;
-                        субъект — его status.id.
+                      description: ServiceAccountRef — CR IAMServiceAccount этого
+                        namespace; субъект — его status.id.
                       properties:
                         name:
-                          description: Name — имя CR ServiceAccount.
+                          description: Name — имя CR IAMServiceAccount.
                           maxLength: 253
                           minLength: 1
                           type: string
@@ -235,7 +236,7 @@ spec:
             - target
             type: object
           status:
-            description: AccessBindingStatus — наблюдаемое состояние выдачи.
+            description: IAMAccessBindingStatus — наблюдаемое состояние выдачи.
             properties:
               admissionWitness:
                 description: |-

@@ -29,8 +29,8 @@ rules:
 - apiGroups:
   - iam.kaname.in-cloud.io
   resources:
-  - accessbindings
-  - serviceaccounts
+  - iamaccessbindings
+  - iamserviceaccounts
   verbs:
   - get
   - list
@@ -40,15 +40,15 @@ rules:
 - apiGroups:
   - iam.kaname.in-cloud.io
   resources:
-  - accessbindings/finalizers
-  - serviceaccounts/finalizers
+  - iamaccessbindings/finalizers
+  - iamserviceaccounts/finalizers
   verbs:
   - update
 - apiGroups:
   - iam.kaname.in-cloud.io
   resources:
-  - accessbindings/status
-  - serviceaccounts/status
+  - iamaccessbindings/status
+  - iamserviceaccounts/status
   verbs:
   - get
   - patch
