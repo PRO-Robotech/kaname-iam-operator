@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package v1alpha1 — схема API группы iam.kaname.in-cloud.io/v1alpha1:
-// ServiceAccount и AccessBinding, отражающие учётку и выдачу kaname IAM.
+// IAMServiceAccount и IAMAccessBinding, отражающие учётку и выдачу kaname IAM.
 // +kubebuilder:object:generate=true
 // +groupName=iam.kaname.in-cloud.io
 package v1alpha1
@@ -27,8 +27,8 @@ var (
 
 func addKnownTypes(s *runtime.Scheme) error {
 	s.AddKnownTypes(GroupVersion,
-		&ServiceAccount{}, &ServiceAccountList{},
-		&AccessBinding{}, &AccessBindingList{},
+		&IAMServiceAccount{}, &IAMServiceAccountList{},
+		&IAMAccessBinding{}, &IAMAccessBindingList{},
 	)
 	metav1.AddToGroupVersion(s, GroupVersion)
 	return nil

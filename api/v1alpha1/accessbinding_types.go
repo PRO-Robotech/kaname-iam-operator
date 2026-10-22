@@ -8,9 +8,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// LocalServiceAccountRef — ссылка на CR ServiceAccount в том же namespace.
+// LocalServiceAccountRef — ссылка на CR IAMServiceAccount в том же namespace.
 type LocalServiceAccountRef struct {
-	// Name — имя CR ServiceAccount.
+	// Name — имя CR IAMServiceAccount.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	Name string `json:"name"`
@@ -37,7 +37,7 @@ type SystemClassRef struct {
 // Subject — ровно один субъект выдачи.
 // +kubebuilder:validation:XValidation:rule="[has(self.serviceAccountRef), has(self.user), has(self.group), has(self.systemClass)].filter(x, x).size() == 1",message="exactly one of serviceAccountRef, user, group, systemClass must be set"
 type Subject struct {
-	// ServiceAccountRef — CR ServiceAccount этого namespace; субъект — его status.id.
+	// ServiceAccountRef — CR IAMServiceAccount этого namespace; субъект — его status.id.
 	// +optional
 	ServiceAccountRef *LocalServiceAccountRef `json:"serviceAccountRef,omitempty"`
 	// User — пользователь kaname. Допускается только от принципалов платформы.
@@ -115,8 +115,8 @@ type Target struct {
 	AllInScope *AllInScope `json:"allInScope,omitempty"`
 }
 
-// AccessBindingSpec — желаемая выдача kaname.
-type AccessBindingSpec struct {
+// IAMAccessBindingSpec — желаемая выдача kaname.
+type IAMAccessBindingSpec struct {
 	// Subjects — субъекты выдачи. Неизменяемы.
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=16
@@ -192,7 +192,7 @@ type ResolvedBinding struct {
 // (policy.admissionEnforcementDelay) — и исполнялась: гарантия допуска
 // судится на последнюю смену spec, а не на создание CR. status пишет не
 // только оператор (пока политика status не исполняется — любой, кому RBAC
-// даёт accessbindings/status), поэтому оператор доверяет свидетельству только
+// даёт iamaccessbindings/status), поэтому оператор доверяет свидетельству только
 // с верной печатью (Seal). Запись идёт с проверкой resourceVersion: поколение
 // spec в записи — то, что было у объекта в момент чтения политик.
 type AdmissionWitness struct {
@@ -266,8 +266,8 @@ type ReplacedBinding struct {
 	ID string `json:"id"`
 }
 
-// AccessBindingStatus — наблюдаемое состояние выдачи.
-type AccessBindingStatus struct {
+// IAMAccessBindingStatus — наблюдаемое состояние выдачи.
+type IAMAccessBindingStatus struct {
 	// ObservedGeneration — поколение spec, по которому выставлены условия.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
@@ -313,33 +313,33 @@ type AccessBindingStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
-// AccessBinding — выдача роли kaname IAM субъектам на цели в области.
+// IAMAccessBinding — выдача роли kaname IAM субъектам на цели в области.
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:shortName=kab,categories=kaname-iam
+// +kubebuilder:resource:shortName=iamab,categories=kaname-iam
 // +kubebuilder:printcolumn:name="Role",type=string,JSONPath=`.spec.roleRef.name`
 // +kubebuilder:printcolumn:name="ID",type=string,JSONPath=`.status.id`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
-type AccessBinding struct {
+type IAMAccessBinding struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   AccessBindingSpec   `json:"spec"`
-	Status AccessBindingStatus `json:"status,omitempty"`
+	Spec   IAMAccessBindingSpec   `json:"spec"`
+	Status IAMAccessBindingStatus `json:"status,omitempty"`
 }
 
-// AccessBindingList — список AccessBinding.
+// IAMAccessBindingList — список IAMAccessBinding.
 // +kubebuilder:object:root=true
-type AccessBindingList struct {
+type IAMAccessBindingList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []AccessBinding `json:"items"`
+	Items           []IAMAccessBinding `json:"items"`
 }
 
 // EffectiveDeletionPolicy — политика удаления с умолчанием Delete.
-func (s *AccessBindingSpec) EffectiveDeletionPolicy() DeletionPolicy {
+func (s *IAMAccessBindingSpec) EffectiveDeletionPolicy() DeletionPolicy {
 	if s.DeletionPolicy == "" {
 		return DeletionPolicyDelete
 	}
@@ -347,7 +347,7 @@ func (s *AccessBindingSpec) EffectiveDeletionPolicy() DeletionPolicy {
 }
 
 // EffectiveScopeType — тип области с умолчанием iam.project.
-func (s *AccessBindingSpec) EffectiveScopeType() ScopeType {
+func (s *IAMAccessBindingSpec) EffectiveScopeType() ScopeType {
 	if s.Scope.Type == "" {
 		return ScopeProject
 	}

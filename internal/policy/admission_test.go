@@ -75,14 +75,14 @@ func seen(gen int64, names ...string) *iamv1alpha1.AdmissionWitness {
 
 // binding — объект поколения gen, созданный в created, со свидетельством w,
 // записанным оператором: с его печатью.
-func binding(created time.Time, gen int64, w *iamv1alpha1.AdmissionWitness) *iamv1alpha1.AccessBinding {
+func binding(created time.Time, gen int64, w *iamv1alpha1.AdmissionWitness) *iamv1alpha1.IAMAccessBinding {
 	if w != nil {
 		w = w.DeepCopy()
 		w.Seal = testSeal.sign("", w)
 	}
-	return &iamv1alpha1.AccessBinding{
+	return &iamv1alpha1.IAMAccessBinding{
 		ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(created), Generation: gen},
-		Status:     iamv1alpha1.AccessBindingStatus{AdmissionWitness: w},
+		Status:     iamv1alpha1.IAMAccessBindingStatus{AdmissionWitness: w},
 	}
 }
 
@@ -148,12 +148,12 @@ func refused(t *testing.T, g Guarantee, err error, want string) {
 }
 
 // checkAt — сверка в момент now.
-func checkAt(objs []client.Object, names []string, ab *iamv1alpha1.AccessBinding, now time.Time) (Guarantee, error) {
+func checkAt(objs []client.Object, names []string, ab *iamv1alpha1.IAMAccessBinding, now time.Time) (Guarantee, error) {
 	return CheckAdmissionGuarantee(context.Background(), guardClient(objs), guardPolicy(names), testSeal, ab, now)
 }
 
 // check — сверка в farNow.
-func check(objs []client.Object, names []string, ab *iamv1alpha1.AccessBinding) (Guarantee, error) {
+func check(objs []client.Object, names []string, ab *iamv1alpha1.IAMAccessBinding) (Guarantee, error) {
 	return checkAt(objs, names, ab, farNow)
 }
 
@@ -396,7 +396,7 @@ func TestAdmissionGuaranteeKeepsEachPolicyWitness(t *testing.T) {
 
 // withNonce — объект поколения gen со свидетельством w и значением nonce
 // аннотации rewitness.
-func withNonce(gen int64, w *iamv1alpha1.AdmissionWitness, nonce string) *iamv1alpha1.AccessBinding {
+func withNonce(gen int64, w *iamv1alpha1.AdmissionWitness, nonce string) *iamv1alpha1.IAMAccessBinding {
 	ab := binding(t0, gen, w)
 	ab.Annotations = map[string]string{iamv1alpha1.AnnotationRewitness: nonce}
 	return ab
@@ -566,7 +566,7 @@ func TestAdmissionGuaranteeConfirmedSpecSurvivesAnInPlaceChange(t *testing.T) {
 	const platform, other = "system:serviceaccount:platform-system:onboarding", "system:serviceaccount:platform-system:other"
 	created := t0
 	at := created.Add(time.Hour)
-	byPlatform := func(gen int64, w *iamv1alpha1.AdmissionWitness) *iamv1alpha1.AccessBinding {
+	byPlatform := func(gen int64, w *iamv1alpha1.AdmissionWitness) *iamv1alpha1.IAMAccessBinding {
 		ab := binding(created, gen, w)
 		ab.Annotations = map[string]string{iamv1alpha1.AnnotationCreatedBy: platform}
 		return ab
@@ -634,9 +634,9 @@ func stored(t *testing.T, w *iamv1alpha1.AdmissionWitness) *iamv1alpha1.Admissio
 // created-by by и rewitness nonce (пустое — нет) и status, каким его читает
 // оператор: свидетельство w — ровно то, что в status записано, кем бы то ни
 // было.
-func written(t *testing.T, uid types.UID, created time.Time, gen int64, by, nonce string, w *iamv1alpha1.AdmissionWitness) *iamv1alpha1.AccessBinding {
+func written(t *testing.T, uid types.UID, created time.Time, gen int64, by, nonce string, w *iamv1alpha1.AdmissionWitness) *iamv1alpha1.IAMAccessBinding {
 	t.Helper()
-	ab := &iamv1alpha1.AccessBinding{ObjectMeta: metav1.ObjectMeta{UID: uid, CreationTimestamp: metav1.NewTime(created), Generation: gen,
+	ab := &iamv1alpha1.IAMAccessBinding{ObjectMeta: metav1.ObjectMeta{UID: uid, CreationTimestamp: metav1.NewTime(created), Generation: gen,
 		Annotations: map[string]string{}}}
 	if by != "" {
 		ab.Annotations[iamv1alpha1.AnnotationCreatedBy] = by
@@ -651,7 +651,7 @@ func written(t *testing.T, uid types.UID, created time.Time, gen int64, by, nonc
 // Свидетельство лежит в status, а status держит политика status из того же
 // перечня admissionGuard. Политики переустановлены вместе (в installed), и у
 // новой версии политики status есть своё окно до вступления в силу: status в
-// нём пишет любой, кому RBAC даёт accessbindings/status. Записанное так не
+// нём пишет любой, кому RBAC даёт iamaccessbindings/status. Записанное так не
 // оператором гарантии не даёт — ни в окне, ни после него (SD-K3-9, P5):
 // доверие свидетельству не выводится из того, что может записать писатель
 // status. Законные близнецы — те же поля, записанные самим оператором после
@@ -774,7 +774,7 @@ func equalWitness(a, b *iamv1alpha1.AdmissionWitness) bool {
 }
 
 func TestNeedsAdmissionGuaranteeOnlyForUserGroupAndAllInScope(t *testing.T) {
-	ab := &iamv1alpha1.AccessBinding{Spec: iamv1alpha1.AccessBindingSpec{Subjects: []iamv1alpha1.Subject{
+	ab := &iamv1alpha1.IAMAccessBinding{Spec: iamv1alpha1.IAMAccessBindingSpec{Subjects: []iamv1alpha1.Subject{
 		{ServiceAccountRef: &iamv1alpha1.LocalServiceAccountRef{Name: "a"}},
 		{SystemClass: &iamv1alpha1.SystemClassRef{Name: "anonymous"}},
 	}}}

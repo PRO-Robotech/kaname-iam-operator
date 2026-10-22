@@ -1,6 +1,6 @@
 kaname-iam-operator {{ .Chart.AppVersion }} is installed in {{ .Release.Namespace }}.
 
-Before ServiceAccount and AccessBinding objects reach Ready, the platform must:
+Before IAMServiceAccount and IAMAccessBinding objects reach Ready, the platform must:
   1. register the FEDERATED key of kaname service account for
      {{ include "kio.operatorUser" . }} (trusted_subjects: issuer of this cluster,
      subject_pattern ^{{ include "kio.operatorUser" . }}$, the cluster's service account signing key);

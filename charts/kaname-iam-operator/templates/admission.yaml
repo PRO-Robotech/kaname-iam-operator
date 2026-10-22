@@ -24,7 +24,7 @@ spec:
       - apiGroups: ["iam.kaname.in-cloud.io"]
         apiVersions: ["*"]
         operations: ["CREATE", "UPDATE", "DELETE"]
-        resources: ["serviceaccounts", "accessbindings"]
+        resources: ["iamserviceaccounts", "iamaccessbindings"]
   variables:
     - name: user
       expression: >-
@@ -110,7 +110,7 @@ spec:
       - apiGroups: ["iam.kaname.in-cloud.io"]
         apiVersions: ["*"]
         operations: ["CREATE", "UPDATE"]
-        resources: ["accessbindings"]
+        resources: ["iamaccessbindings"]
   variables:
     - name: grant
       expression: >-
@@ -157,7 +157,7 @@ spec:
       - apiGroups: ["iam.kaname.in-cloud.io"]
         apiVersions: ["*"]
         operations: ["UPDATE"]
-        resources: ["serviceaccounts/status", "accessbindings/status"]
+        resources: ["iamserviceaccounts/status", "iamaccessbindings/status"]
   validations:
     - expression: >-
         request.userInfo.username in {{ toJson $statusWriters }}

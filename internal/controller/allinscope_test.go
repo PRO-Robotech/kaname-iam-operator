@@ -20,7 +20,7 @@ import (
 const platformPrincipal = "system:serviceaccount:platform-system:onboarding"
 
 // newWholeAB — выдача на всю область аккаунта от принципала платформы.
-func newWholeAB(tn tenant, name, saName, role string) *iamv1alpha1.AccessBinding {
+func newWholeAB(tn tenant, name, saName, role string) *iamv1alpha1.IAMAccessBinding {
 	ab := newAB(tn, name, saName, role, "")
 	ab.Annotations = map[string]string{iamv1alpha1.AnnotationCreatedBy: platformPrincipal}
 	ab.Spec.Scope.Type = iamv1alpha1.ScopeAccount
@@ -62,7 +62,7 @@ func TestABAllInScopeFromThePlatformGrantsTheWholeAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, waitReady, func() error {
-		if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(ab), &iamv1alpha1.AccessBinding{}); !apierrors.IsNotFound(err) {
+		if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(ab), &iamv1alpha1.IAMAccessBinding{}); !apierrors.IsNotFound(err) {
 			return fmt.Errorf("CR still present: %w", err)
 		}
 		return nil
@@ -77,7 +77,7 @@ func TestABAllInScopeFromThePlatformGrantsTheWholeAccount(t *testing.T) {
 func TestABAllInScopeRefusals(t *testing.T) {
 	tn := newTenant(t, true)
 	readySA(t, tn, "zot-wneg")
-	refusedWithoutCall := func(t *testing.T, ab *iamv1alpha1.AccessBinding) {
+	refusedWithoutCall := func(t *testing.T, ab *iamv1alpha1.IAMAccessBinding) {
 		t.Helper()
 		creates := countCalls("POST /iam/v1/accessBindings")
 		createAB(t, ab)
@@ -199,11 +199,11 @@ func TestABAllInScopeDriftAndTargetChange(t *testing.T) {
 	}
 
 	patchObj(t, ab, func(o client.Object) {
-		o.(*iamv1alpha1.AccessBinding).Spec.Target = iamv1alpha1.Target{
+		o.(*iamv1alpha1.IAMAccessBinding).Spec.Target = iamv1alpha1.Target{
 			Resources: []iamv1alpha1.ResourceRef{{Type: "registry.registries", ID: "abc123"}},
 		}
 	})
-	var named *iamv1alpha1.AccessBinding
+	var named *iamv1alpha1.IAMAccessBinding
 	eventually(t, waitReady, func() error {
 		named = getAB(t, ab)
 		if named.Status.ID == again.Status.ID || named.Status.Replaced != nil || named.Status.ObservedGeneration != named.Generation {

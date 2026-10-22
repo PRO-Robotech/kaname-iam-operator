@@ -26,7 +26,7 @@ const otherPlatform = "system:serviceaccount:platform-system:provisioner"
 // narrowedAway ждёт, что выдача объекта отозвана в kaname по сужению политики:
 // Rejected/PolicyNarrowed, Ready=False, id выдачи снят, своих действующих
 // выдач в kaname нет.
-func narrowedAway(t *testing.T, ab *iamv1alpha1.AccessBinding, granted string) {
+func narrowedAway(t *testing.T, ab *iamv1alpha1.IAMAccessBinding, granted string) {
 	t.Helper()
 	eventually(t, waitReady, func() error {
 		cur := getAB(t, ab)
@@ -51,8 +51,8 @@ func narrowedAway(t *testing.T, ab *iamv1alpha1.AccessBinding, granted string) {
 
 // stillGranted — выдача, оставшаяся допустимой: та же выдача действует, CR
 // Ready, Rejected=False.
-func stillGranted(ab *iamv1alpha1.AccessBinding, granted string) error {
-	cur := &iamv1alpha1.AccessBinding{}
+func stillGranted(ab *iamv1alpha1.IAMAccessBinding, granted string) error {
+	cur := &iamv1alpha1.IAMAccessBinding{}
 	if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(ab), cur); err != nil {
 		return err
 	}
@@ -70,7 +70,7 @@ func stillGranted(ab *iamv1alpha1.AccessBinding, granted string) error {
 
 // noRegrant держит окно: у отозванных объектов выдача в kaname не заводится
 // вновь, пока политика их запрещает.
-func noRegrant(t *testing.T, abs ...*iamv1alpha1.AccessBinding) func() error {
+func noRegrant(t *testing.T, abs ...*iamv1alpha1.IAMAccessBinding) func() error {
 	t.Helper()
 	return func() error {
 		for _, ab := range abs {
@@ -96,7 +96,7 @@ func TestABNarrowedPlatformPrincipalsWithdrawUserGroupAndAllInScope(t *testing.T
 	tn := newTenant(t, true)
 	reserve(t, tn, "abc123")
 	readySA(t, tn, "zot-narrow")
-	byPlatform := func(name, author string, s iamv1alpha1.Subject) *iamv1alpha1.AccessBinding {
+	byPlatform := func(name, author string, s iamv1alpha1.Subject) *iamv1alpha1.IAMAccessBinding {
 		ab := newAB(tn, name, "zot-narrow", "registry.pusher", "abc123")
 		ab.Annotations = map[string]string{iamv1alpha1.AnnotationCreatedBy: author}
 		ab.Spec.Subjects = []iamv1alpha1.Subject{s}
@@ -111,13 +111,13 @@ func TestABNarrowedPlatformPrincipalsWithdrawUserGroupAndAllInScope(t *testing.T
 	keptSA := newAB(tn, "kept-sa", "zot-narrow", "registry.pusher", "abc123")
 	keptSA.Annotations = map[string]string{iamv1alpha1.AnnotationCreatedBy: platformPrincipal}
 
-	narrowed := []*iamv1alpha1.AccessBinding{user, group, whole, orphan}
-	kept := []*iamv1alpha1.AccessBinding{keptUser, keptSA}
+	narrowed := []*iamv1alpha1.IAMAccessBinding{user, group, whole, orphan}
+	kept := []*iamv1alpha1.IAMAccessBinding{keptUser, keptSA}
 	granted := map[string]string{}
-	for _, ab := range append(append([]*iamv1alpha1.AccessBinding{}, narrowed...), kept...) {
+	for _, ab := range append(append([]*iamv1alpha1.IAMAccessBinding{}, narrowed...), kept...) {
 		createAB(t, ab)
 	}
-	for _, ab := range append(append([]*iamv1alpha1.AccessBinding{}, narrowed...), kept...) {
+	for _, ab := range append(append([]*iamv1alpha1.IAMAccessBinding{}, narrowed...), kept...) {
 		granted[ab.Name] = waitABReady(t, ab).Status.ID
 	}
 
@@ -198,7 +198,7 @@ func removeAdmissionGuard(t *testing.T) {
 
 // witnessed ждёт, что оператор увидел политики допуска пробы впервые при
 // поколении spec gen: запись о каждой — этого поколения.
-func witnessed(t *testing.T, ab *iamv1alpha1.AccessBinding, gen int64) {
+func witnessed(t *testing.T, ab *iamv1alpha1.IAMAccessBinding, gen int64) {
 	t.Helper()
 	eventually(t, waitReady, func() error {
 		w := getAB(t, ab).Status.AdmissionWitness
@@ -218,14 +218,14 @@ func witnessed(t *testing.T, ab *iamv1alpha1.AccessBinding, gen int64) {
 	})
 }
 
-func respec(t *testing.T, ab *iamv1alpha1.AccessBinding, rev string) {
+func respec(t *testing.T, ab *iamv1alpha1.IAMAccessBinding, rev string) {
 	t.Helper()
 	patchObj(t, ab, func(o client.Object) {
-		o.(*iamv1alpha1.AccessBinding).Spec.Labels = map[string]string{"rev": rev}
+		o.(*iamv1alpha1.IAMAccessBinding).Spec.Labels = map[string]string{"rev": rev}
 	})
 }
 
-func refusedForbidden(t *testing.T, ab *iamv1alpha1.AccessBinding) {
+func refusedForbidden(t *testing.T, ab *iamv1alpha1.IAMAccessBinding) {
 	t.Helper()
 	eventually(t, waitReady, func() error {
 		cur := getAB(t, ab)
@@ -247,7 +247,7 @@ func refusedForbidden(t *testing.T, ab *iamv1alpha1.AccessBinding) {
 func TestABAdmissionGuaranteeIsJudgedAtTheLastSpecChange(t *testing.T) {
 	tn := newTenant(t, true)
 	reserve(t, tn, "abc123")
-	byPlatform := func(name, id string) *iamv1alpha1.AccessBinding {
+	byPlatform := func(name, id string) *iamv1alpha1.IAMAccessBinding {
 		ab := newAB(tn, name, "unused", "registry.pusher", "abc123")
 		ab.Annotations = map[string]string{iamv1alpha1.AnnotationCreatedBy: platformPrincipal}
 		ab.Spec.Subjects = []iamv1alpha1.Subject{{User: &iamv1alpha1.PrincipalRef{ID: id}}}
@@ -262,7 +262,7 @@ func TestABAdmissionGuaranteeIsJudgedAtTheLastSpecChange(t *testing.T) {
 	// Отметки времени объектов k8s — с точностью до секунды: политика,
 	// поставленная в ту же секунду, что и CR, не была бы моложе него, и проба
 	// мерила бы не то.
-	for _, ab := range []*iamv1alpha1.AccessBinding{pos, neg} {
+	for _, ab := range []*iamv1alpha1.IAMAccessBinding{pos, neg} {
 		time.Sleep(time.Until(getAB(t, ab).CreationTimestamp.Add(time.Second + 100*time.Millisecond)))
 	}
 	installAdmissionGuard(t)

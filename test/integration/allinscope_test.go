@@ -203,15 +203,15 @@ func TestAllInScopeAccountGrantReachesEveryRegistryOfTheAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	robotCR := &iamv1alpha1.ServiceAccount{
+	robotCR := &iamv1alpha1.IAMServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{Name: "robot", Namespace: ns.Name},
-		Spec:       iamv1alpha1.ServiceAccountSpec{Name: "kio-it-" + run + "-whole", Description: "allInScope probe robot"},
+		Spec:       iamv1alpha1.IAMServiceAccountSpec{Name: "kio-it-" + run + "-whole", Description: "allInScope probe robot"},
 	}
 	if err := platform.Create(ctx, robotCR); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = k8s.Delete(context.Background(), robotCR) })
-	robotCur := &iamv1alpha1.ServiceAccount{}
+	robotCur := &iamv1alpha1.IAMServiceAccount{}
 	eventually(t, func() error {
 		if err := k8s.Get(ctx, client.ObjectKeyFromObject(robotCR), robotCur); err != nil {
 			return err
@@ -227,11 +227,11 @@ func TestAllInScopeAccountGrantReachesEveryRegistryOfTheAccount(t *testing.T) {
 	// Предпосылка мира пробы: человек — владелец чужого аккаунта, и там ему
 	// разрешено всё без выдачи (право владельца материализуется фоном).
 	eventuallyAllowed(t, rc, true, user, "v_update", repoC)
-	whole := func(name, creator string) *iamv1alpha1.AccessBinding {
-		return &iamv1alpha1.AccessBinding{
+	whole := func(name, creator string) *iamv1alpha1.IAMAccessBinding {
+		return &iamv1alpha1.IAMAccessBinding{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns.Name,
 				Annotations: map[string]string{iamv1alpha1.AnnotationCreatedBy: creator}},
-			Spec: iamv1alpha1.AccessBindingSpec{
+			Spec: iamv1alpha1.IAMAccessBindingSpec{
 				Subjects: []iamv1alpha1.Subject{
 					{User: &iamv1alpha1.PrincipalRef{ID: userID}},
 					{ServiceAccountRef: &iamv1alpha1.LocalServiceAccountRef{Name: robotCR.Name}},
@@ -257,7 +257,7 @@ func TestAllInScopeAccountGrantReachesEveryRegistryOfTheAccount(t *testing.T) {
 		t.Fatalf("allInScope from the platform principal: %v", err)
 	}
 	t.Cleanup(func() { _ = k8s.Delete(context.Background(), ab) })
-	cur := &iamv1alpha1.AccessBinding{}
+	cur := &iamv1alpha1.IAMAccessBinding{}
 	eventually(t, func() error {
 		if err := k8s.Get(ctx, client.ObjectKeyFromObject(ab), cur); err != nil {
 			return err
@@ -292,7 +292,7 @@ func TestAllInScopeAccountGrantReachesEveryRegistryOfTheAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, func() error {
-		if err := k8s.Get(ctx, client.ObjectKeyFromObject(ab), &iamv1alpha1.AccessBinding{}); !apierrors.IsNotFound(err) {
+		if err := k8s.Get(ctx, client.ObjectKeyFromObject(ab), &iamv1alpha1.IAMAccessBinding{}); !apierrors.IsNotFound(err) {
 			return fmt.Errorf("CR still present: %w", err)
 		}
 		return nil
@@ -309,7 +309,7 @@ func TestAllInScopeAccountGrantReachesEveryRegistryOfTheAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, func() error {
-		if err := k8s.Get(ctx, client.ObjectKeyFromObject(robotCR), &iamv1alpha1.ServiceAccount{}); !apierrors.IsNotFound(err) {
+		if err := k8s.Get(ctx, client.ObjectKeyFromObject(robotCR), &iamv1alpha1.IAMServiceAccount{}); !apierrors.IsNotFound(err) {
 			return fmt.Errorf("robot CR still present: %w", err)
 		}
 		return nil

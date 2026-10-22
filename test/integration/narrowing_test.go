@@ -66,42 +66,42 @@ func TestPolicyNarrowingRevokesInRealKaname(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	robot := &iamv1alpha1.ServiceAccount{
+	robot := &iamv1alpha1.IAMServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{Name: "robot", Namespace: ns.Name},
-		Spec:       iamv1alpha1.ServiceAccountSpec{Name: "kio-it-" + run + "-narrow", Description: "policy narrowing probe robot"},
+		Spec:       iamv1alpha1.IAMServiceAccountSpec{Name: "kio-it-" + run + "-narrow", Description: "policy narrowing probe robot"},
 	}
 	if err := platform.Create(ctx, robot); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { removeCR(t, robot) })
 	eventually(t, func() error {
-		cur := &iamv1alpha1.ServiceAccount{}
+		cur := &iamv1alpha1.IAMServiceAccount{}
 		if err := k8s.Get(ctx, client.ObjectKeyFromObject(robot), cur); err != nil {
 			return err
 		}
 		return ready(cur.Status.Conditions)
 	})
 
-	whole := &iamv1alpha1.AccessBinding{
+	whole := &iamv1alpha1.IAMAccessBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: "whole", Namespace: ns.Name,
 			Annotations: map[string]string{iamv1alpha1.AnnotationCreatedBy: platformUser}},
-		Spec: iamv1alpha1.AccessBindingSpec{
+		Spec: iamv1alpha1.IAMAccessBindingSpec{
 			Subjects: []iamv1alpha1.Subject{{ServiceAccountRef: &iamv1alpha1.LocalServiceAccountRef{Name: robot.Name}}},
 			RoleRef:  iamv1alpha1.RoleRef{Name: pusherRole},
 			Scope:    iamv1alpha1.Scope{Type: iamv1alpha1.ScopeAccount},
 			Target:   iamv1alpha1.Target{AllInScope: &iamv1alpha1.AllInScope{}},
 		},
 	}
-	named := &iamv1alpha1.AccessBinding{
+	named := &iamv1alpha1.IAMAccessBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: "named", Namespace: ns.Name,
 			Annotations: map[string]string{iamv1alpha1.AnnotationCreatedBy: platformUser}},
-		Spec: iamv1alpha1.AccessBindingSpec{
+		Spec: iamv1alpha1.IAMAccessBindingSpec{
 			Subjects: []iamv1alpha1.Subject{{ServiceAccountRef: &iamv1alpha1.LocalServiceAccountRef{Name: robot.Name}}},
 			RoleRef:  iamv1alpha1.RoleRef{Name: env["KIO_IT_ROLE"]},
 			Target:   iamv1alpha1.Target{Resources: []iamv1alpha1.ResourceRef{{Type: env["KIO_IT_TARGET_TYPE"], ID: target}}},
 		},
 	}
-	for _, ab := range []*iamv1alpha1.AccessBinding{whole, named} {
+	for _, ab := range []*iamv1alpha1.IAMAccessBinding{whole, named} {
 		if err := platform.Create(ctx, ab); err != nil {
 			t.Fatalf("create %s: %v", ab.Name, err)
 		}
@@ -125,9 +125,9 @@ func TestPolicyNarrowingRevokesInRealKaname(t *testing.T) {
 }
 
 // grantedID ждёт Ready и действующую выдачу в kaname.
-func grantedID(t *testing.T, ab *iamv1alpha1.AccessBinding) string {
+func grantedID(t *testing.T, ab *iamv1alpha1.IAMAccessBinding) string {
 	t.Helper()
-	cur := &iamv1alpha1.AccessBinding{}
+	cur := &iamv1alpha1.IAMAccessBinding{}
 	eventually(t, func() error {
 		if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(ab), cur); err != nil {
 			return err
@@ -145,10 +145,10 @@ func grantedID(t *testing.T, ab *iamv1alpha1.AccessBinding) string {
 
 // withdrawn ждёт отзыва выдачи id в kaname по сужению: CR Rejected/
 // PolicyNarrowed, id снят, своих действующих выдач нет.
-func withdrawn(t *testing.T, ab *iamv1alpha1.AccessBinding, id string) {
+func withdrawn(t *testing.T, ab *iamv1alpha1.IAMAccessBinding, id string) {
 	t.Helper()
 	eventually(t, func() error {
-		cur := &iamv1alpha1.AccessBinding{}
+		cur := &iamv1alpha1.IAMAccessBinding{}
 		if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(ab), cur); err != nil {
 			return err
 		}
@@ -171,11 +171,11 @@ func withdrawn(t *testing.T, ab *iamv1alpha1.AccessBinding, id string) {
 
 // keptAndNotRegranted держит окно в несколько интервалов сверки: выдача
 // kept действует той же, отозванная gone вновь не заводится.
-func keptAndNotRegranted(t *testing.T, kept *iamv1alpha1.AccessBinding, keptID string, gone *iamv1alpha1.AccessBinding) {
+func keptAndNotRegranted(t *testing.T, kept *iamv1alpha1.IAMAccessBinding, keptID string, gone *iamv1alpha1.IAMAccessBinding) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		cur := &iamv1alpha1.AccessBinding{}
+		cur := &iamv1alpha1.IAMAccessBinding{}
 		if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(kept), cur); err != nil {
 			t.Fatal(err)
 		}
@@ -185,7 +185,7 @@ func keptAndNotRegranted(t *testing.T, kept *iamv1alpha1.AccessBinding, keptID s
 		if b := binding(t, keptID); b.GetStatus() != iamv1.AccessBinding_ACTIVE {
 			t.Fatalf("%s: kaname binding %s is %s", kept.Name, keptID, b.GetStatus())
 		}
-		g := &iamv1alpha1.AccessBinding{}
+		g := &iamv1alpha1.IAMAccessBinding{}
 		if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(gone), g); err != nil {
 			t.Fatal(err)
 		}

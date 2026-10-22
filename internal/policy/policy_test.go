@@ -36,10 +36,10 @@ func testPolicy() config.Policy {
 }
 
 // lawful — законный близнец: каждый отрицательный случай меняет один факт.
-func lawful() *iamv1alpha1.AccessBinding {
-	return &iamv1alpha1.AccessBinding{
+func lawful() *iamv1alpha1.IAMAccessBinding {
+	return &iamv1alpha1.IAMAccessBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: "ci-pusher", Namespace: "cust01"},
-		Spec: iamv1alpha1.AccessBindingSpec{
+		Spec: iamv1alpha1.IAMAccessBindingSpec{
 			Subjects: []iamv1alpha1.Subject{{ServiceAccountRef: &iamv1alpha1.LocalServiceAccountRef{Name: "zot-ci"}}},
 			RoleRef:  iamv1alpha1.RoleRef{Name: "registry.pusher"},
 			Target:   iamv1alpha1.Target{Resources: []iamv1alpha1.ResourceRef{{Type: "registry.registries", ID: "abc123"}}},
@@ -56,50 +56,50 @@ func TestEvaluateLawfulBindingPasses(t *testing.T) {
 func TestEvaluateRefusesEachBrokenFact(t *testing.T) {
 	cases := []struct {
 		name   string
-		mutate func(ab *iamv1alpha1.AccessBinding)
+		mutate func(ab *iamv1alpha1.IAMAccessBinding)
 		want   string
 	}{
-		{"role not allowed", func(ab *iamv1alpha1.AccessBinding) { ab.Spec.RoleRef.Name = "registry.admin" }, "registry.admin"},
-		{"system class with an ordinary role", func(ab *iamv1alpha1.AccessBinding) {
+		{"role not allowed", func(ab *iamv1alpha1.IAMAccessBinding) { ab.Spec.RoleRef.Name = "registry.admin" }, "registry.admin"},
+		{"system class with an ordinary role", func(ab *iamv1alpha1.IAMAccessBinding) {
 			ab.Spec.Subjects = []iamv1alpha1.Subject{{SystemClass: &iamv1alpha1.SystemClassRef{Name: "anonymous"}}}
 		}, "system class"},
-		{"user without a platform creator", func(ab *iamv1alpha1.AccessBinding) {
+		{"user without a platform creator", func(ab *iamv1alpha1.IAMAccessBinding) {
 			ab.Spec.Subjects = []iamv1alpha1.Subject{{User: &iamv1alpha1.PrincipalRef{ID: "usr1"}}}
 		}, "platform"},
-		{"group with a foreign creator", func(ab *iamv1alpha1.AccessBinding) {
+		{"group with a foreign creator", func(ab *iamv1alpha1.IAMAccessBinding) {
 			ab.Annotations = map[string]string{iamv1alpha1.AnnotationCreatedBy: "system:serviceaccount:cust01:default"}
 			ab.Spec.Subjects = []iamv1alpha1.Subject{{Group: &iamv1alpha1.PrincipalRef{ID: "grp1"}}}
 		}, "platform"},
-		{"subject with no field", func(ab *iamv1alpha1.AccessBinding) {
+		{"subject with no field", func(ab *iamv1alpha1.IAMAccessBinding) {
 			ab.Spec.Subjects = []iamv1alpha1.Subject{{}}
 		}, "exactly one"},
-		{"target type without a resolver", func(ab *iamv1alpha1.AccessBinding) {
+		{"target type without a resolver", func(ab *iamv1alpha1.IAMAccessBinding) {
 			ab.Spec.Target.Resources[0].Type = "registry.repositories"
 		}, "registry.repositories"},
 		// Вся область — каскад на все объекты области, включая будущие: ставит
 		// только платформа. Каждый случай меняет один факт против близнеца
 		// platformAllInScope из TestEvaluateTwinsOfTheRestrictedSubjects.
-		{"allInScope without a creator", func(ab *iamv1alpha1.AccessBinding) {
+		{"allInScope without a creator", func(ab *iamv1alpha1.IAMAccessBinding) {
 			ab.Spec.Target = iamv1alpha1.Target{AllInScope: &iamv1alpha1.AllInScope{}}
 		}, "allInScope is accepted only from a platform principal"},
-		{"allInScope from a non-platform writer", func(ab *iamv1alpha1.AccessBinding) {
+		{"allInScope from a non-platform writer", func(ab *iamv1alpha1.IAMAccessBinding) {
 			ab.Annotations = map[string]string{iamv1alpha1.AnnotationCreatedBy: "system:serviceaccount:registry-system:registry-operator"}
 			ab.Spec.Target = iamv1alpha1.Target{AllInScope: &iamv1alpha1.AllInScope{}}
 		}, "allInScope is accepted only from a platform principal"},
-		{"allInScope to a system class", func(ab *iamv1alpha1.AccessBinding) {
+		{"allInScope to a system class", func(ab *iamv1alpha1.IAMAccessBinding) {
 			platformAllInScope(ab)
 			ab.Spec.RoleRef.Name = "registry.public.read"
 			ab.Spec.Subjects = []iamv1alpha1.Subject{{SystemClass: &iamv1alpha1.SystemClassRef{Name: "anonymous"}}}
 		}, "a system class is never granted allInScope"},
-		{"allInScope outside a project or account scope", func(ab *iamv1alpha1.AccessBinding) {
+		{"allInScope outside a project or account scope", func(ab *iamv1alpha1.IAMAccessBinding) {
 			platformAllInScope(ab)
 			ab.Spec.Scope.Type = "iam.cluster"
 		}, "allInScope is accepted only with scope iam.project or iam.account"},
-		{"both target arms", func(ab *iamv1alpha1.AccessBinding) {
+		{"both target arms", func(ab *iamv1alpha1.IAMAccessBinding) {
 			platformAllInScope(ab)
 			ab.Spec.Target.Resources = []iamv1alpha1.ResourceRef{{Type: "registry.registries", ID: "abc123"}}
 		}, "exactly one of resources, allInScope"},
-		{"neither target arm", func(ab *iamv1alpha1.AccessBinding) {
+		{"neither target arm", func(ab *iamv1alpha1.IAMAccessBinding) {
 			ab.Spec.Target = iamv1alpha1.Target{}
 		}, "exactly one of resources, allInScope"},
 	}
@@ -143,7 +143,7 @@ func TestEvaluateTwinsOfTheRestrictedSubjects(t *testing.T) {
 
 // platformAllInScope — законная выдача на всю область: автор — принципал
 // платформы, субъект — учётка, область — аккаунт.
-func platformAllInScope(ab *iamv1alpha1.AccessBinding) {
+func platformAllInScope(ab *iamv1alpha1.IAMAccessBinding) {
 	ab.Annotations = map[string]string{iamv1alpha1.AnnotationCreatedBy: "system:serviceaccount:platform-system:onboarding"}
 	ab.Spec.Scope.Type = iamv1alpha1.ScopeAccount
 	ab.Spec.Target = iamv1alpha1.Target{AllInScope: &iamv1alpha1.AllInScope{}}

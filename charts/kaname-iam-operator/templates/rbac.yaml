@@ -16,13 +16,13 @@ rules:
     resources: [events]
     verbs: [create, patch]
   - apiGroups: [iam.kaname.in-cloud.io]
-    resources: [serviceaccounts, accessbindings]
+    resources: [iamserviceaccounts, iamaccessbindings]
     verbs: [get, list, watch, update, patch]
   - apiGroups: [iam.kaname.in-cloud.io]
-    resources: [serviceaccounts/status, accessbindings/status]
+    resources: [iamserviceaccounts/status, iamaccessbindings/status]
     verbs: [get, update, patch]
   - apiGroups: [iam.kaname.in-cloud.io]
-    resources: [serviceaccounts/finalizers, accessbindings/finalizers]
+    resources: [iamserviceaccounts/finalizers, iamaccessbindings/finalizers]
     verbs: [update]
   {{- if .Values.admission.enabled }}
   # Гарантия допуска для субъектов user/group: оператор читает СВОИ политики

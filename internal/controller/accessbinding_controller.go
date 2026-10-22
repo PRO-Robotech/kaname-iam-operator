@@ -37,14 +37,14 @@ import (
 )
 
 const (
-	kindAB = "AccessBinding"
+	kindAB = "IAMAccessBinding"
 	// pendingRecheck — пауза ожидания цели либо субъекта (и страховка к
 	// событию, которое их принесёт).
 	pendingRecheck = 30 * time.Second
 )
 
-// AccessBindingReconciler отражает CR AccessBinding в выдачу kaname.
-type AccessBindingReconciler struct {
+// IAMAccessBindingReconciler отражает CR IAMAccessBinding в выдачу kaname.
+type IAMAccessBindingReconciler struct {
 	client.Client
 	*Deps
 	Mapper meta.RESTMapper
@@ -53,26 +53,26 @@ type AccessBindingReconciler struct {
 	Reader client.Reader
 }
 
-// +kubebuilder:rbac:groups=iam.kaname.in-cloud.io,resources=accessbindings,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=iam.kaname.in-cloud.io,resources=accessbindings/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=iam.kaname.in-cloud.io,resources=accessbindings/finalizers,verbs=update
+// +kubebuilder:rbac:groups=iam.kaname.in-cloud.io,resources=iamaccessbindings,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=iam.kaname.in-cloud.io,resources=iamaccessbindings/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=iam.kaname.in-cloud.io,resources=iamaccessbindings/finalizers,verbs=update
 // +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=validatingadmissionpolicies;validatingadmissionpolicybindings,verbs=get
 
-// SetupAccessBindingReconciler регистрирует контроллер AccessBinding.
-func SetupAccessBindingReconciler(mgr ctrl.Manager, d *Deps) error {
-	r := &AccessBindingReconciler{Client: mgr.GetClient(), Deps: d, Mapper: mgr.GetRESTMapper(), Reader: mgr.GetAPIReader()}
+// SetupIAMAccessBindingReconciler регистрирует контроллер IAMAccessBinding.
+func SetupIAMAccessBindingReconciler(mgr ctrl.Manager, d *Deps) error {
+	r := &IAMAccessBindingReconciler{Client: mgr.GetClient(), Deps: d, Mapper: mgr.GetRESTMapper(), Reader: mgr.GetAPIReader()}
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&iamv1alpha1.AccessBinding{}, builder.WithPredicates(specOrMetaChanged())).
+		For(&iamv1alpha1.IAMAccessBinding{}, builder.WithPredicates(specOrMetaChanged())).
 		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.forNamespace),
 			builder.WithPredicates(predicate.AnnotationChangedPredicate{})).
-		Watches(&iamv1alpha1.ServiceAccount{}, handler.EnqueueRequestsFromMapFunc(r.forServiceAccount)).
+		Watches(&iamv1alpha1.IAMServiceAccount{}, handler.EnqueueRequestsFromMapFunc(r.forServiceAccount)).
 		WithOptions(d.controllerOptions()).
-		Named("accessbinding").
+		Named("iamaccessbinding").
 		Complete(r)
 }
 
-func (r *AccessBindingReconciler) forNamespace(ctx context.Context, obj client.Object) []reconcile.Request {
-	var list iamv1alpha1.AccessBindingList
+func (r *IAMAccessBindingReconciler) forNamespace(ctx context.Context, obj client.Object) []reconcile.Request {
+	var list iamv1alpha1.IAMAccessBindingList
 	if err := r.List(ctx, &list, client.InNamespace(obj.GetName())); err != nil {
 		return nil
 	}
@@ -84,8 +84,8 @@ func (r *AccessBindingReconciler) forNamespace(ctx context.Context, obj client.O
 }
 
 // forServiceAccount будит выдачи, чей субъект — эта учётка.
-func (r *AccessBindingReconciler) forServiceAccount(ctx context.Context, obj client.Object) []reconcile.Request {
-	var list iamv1alpha1.AccessBindingList
+func (r *IAMAccessBindingReconciler) forServiceAccount(ctx context.Context, obj client.Object) []reconcile.Request {
+	var list iamv1alpha1.IAMAccessBindingList
 	if err := r.List(ctx, &list, client.InNamespace(obj.GetNamespace()), client.MatchingFields{indexBindingSA: obj.GetName()}); err != nil {
 		return nil
 	}
@@ -97,8 +97,8 @@ func (r *AccessBindingReconciler) forServiceAccount(ctx context.Context, obj cli
 }
 
 // Reconcile — один проход.
-func (r *AccessBindingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	ab := &iamv1alpha1.AccessBinding{}
+func (r *IAMAccessBindingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	ab := &iamv1alpha1.IAMAccessBinding{}
 	if err := r.Get(ctx, req.NamespacedName, ab); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -125,9 +125,9 @@ func (r *AccessBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 }
 
 type abPass struct {
-	r         *AccessBindingReconciler
-	ab        *iamv1alpha1.AccessBinding
-	saved     *iamv1alpha1.AccessBindingStatus
+	r         *IAMAccessBindingReconciler
+	ab        *iamv1alpha1.IAMAccessBinding
+	saved     *iamv1alpha1.IAMAccessBindingStatus
 	resyncNow bool
 	// recheck — через сколько вступает в силу ближайшая увиденная версия
 	// политики допуска (Guarantee.RecheckAfter); 0 — ждать нечего.
@@ -474,7 +474,7 @@ func (p *abPass) resolve(ctx context.Context, accountID, scopeType, scopeID stri
 		var sub *iamv1.Subject
 		switch {
 		case s.ServiceAccountRef != nil:
-			sa := &iamv1alpha1.ServiceAccount{}
+			sa := &iamv1alpha1.IAMServiceAccount{}
 			err := p.r.Get(ctx, client.ObjectKey{Namespace: ab.Namespace, Name: s.ServiceAccountRef.Name}, sa)
 			if err != nil && !apierrors.IsNotFound(err) {
 				return desired{}, ctrl.Result{}, err, false

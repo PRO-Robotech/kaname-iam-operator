@@ -560,11 +560,11 @@ func runOperator(ctx context.Context, cfg *config.Config) (stop func(), err erro
 		cancel()
 		return nil, fmt.Errorf("indexes: %w", err)
 	}
-	if err := controller.SetupServiceAccountReconciler(mgr, deps); err != nil {
+	if err := controller.SetupIAMServiceAccountReconciler(mgr, deps); err != nil {
 		cancel()
 		return nil, fmt.Errorf("sa: %w", err)
 	}
-	if err := controller.SetupAccessBindingReconciler(mgr, deps); err != nil {
+	if err := controller.SetupIAMAccessBindingReconciler(mgr, deps); err != nil {
 		cancel()
 		return nil, fmt.Errorf("ab: %w", err)
 	}

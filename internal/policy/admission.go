@@ -22,7 +22,7 @@ import (
 // NeedsAdmissionGuarantee — несёт ли выдача то, что допустимо только от
 // принципала платформы (субъект user или group, цель allInScope): решение о
 // нём читает аннотацию created-by, а её пишет клиент.
-func NeedsAdmissionGuarantee(ab *iamv1alpha1.AccessBinding) bool {
+func NeedsAdmissionGuarantee(ab *iamv1alpha1.IAMAccessBinding) bool {
 	return ab.Spec.Target.AllInScope != nil ||
 		slices.ContainsFunc(ab.Spec.Subjects, func(s iamv1alpha1.Subject) bool { return s.User != nil || s.Group != nil })
 }
@@ -52,7 +52,7 @@ type Guarantee struct {
 // тогда, когда записан текущий spec объекта (его последняя смена, поколение
 // ab.Generation). seal — печать оператора; now — часы оператора.
 //
-// Без этого аннотация — слово клиента: тот, кто вправе писать AccessBinding,
+// Без этого аннотация — слово клиента: тот, кто вправе писать IAMAccessBinding,
 // пишет в created-by имя принципала платформы, а смену spec, пока политик
 // нет (или пока они правлены в пропускающие), не судит никто. Исполнение
 // политики при записи spec доказывает запись свидетельства о ней
@@ -103,7 +103,7 @@ type Guarantee struct {
 // p.AdmissionEnforcementDelay после первой встречи оператора с новой
 // версией: как и прочие политики, она до того может не исполняться; снятая
 // или правленная в пропускающую не держит status вовсе. В эти окна status
-// пишет любой, кому RBAC даёт accessbindings/status. Поэтому свидетельство
+// пишет любой, кому RBAC даёт iamaccessbindings/status. Поэтому свидетельство
 // читается, только если несёт печать: HMAC по uid объекта и всему его
 // содержимому на ключе из Secret в namespace оператора (WitnessSeal) — ключ
 // писателям CR и status недоступен.
@@ -138,7 +138,7 @@ type Guarantee struct {
 // доказывает не больше, чем доказывала.
 // (4) Политика судится по устройству (наличие, отказ, охват), а не по
 // содержанию выражений.
-func CheckAdmissionGuarantee(ctx context.Context, c client.Reader, p config.Policy, seal *WitnessSeal, ab *iamv1alpha1.AccessBinding, now time.Time) (Guarantee, error) {
+func CheckAdmissionGuarantee(ctx context.Context, c client.Reader, p config.Policy, seal *WitnessSeal, ab *iamv1alpha1.IAMAccessBinding, now time.Time) (Guarantee, error) {
 	names := p.AdmissionGuard
 	if len(names) == 0 {
 		return Guarantee{Violation: lost("user and group subjects and an allInScope target need the admission guarantee of annotation %s, and the operator configuration names no admission policy (policy.admissionGuard)", iamv1alpha1.AnnotationCreatedBy)}, nil

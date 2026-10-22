@@ -46,10 +46,10 @@ func reserveIn(t *testing.T, ns, id string) {
 	}
 }
 
-func newAB(tn tenant, name, saName, role, target string) *iamv1alpha1.AccessBinding {
-	return &iamv1alpha1.AccessBinding{
+func newAB(tn tenant, name, saName, role, target string) *iamv1alpha1.IAMAccessBinding {
+	return &iamv1alpha1.IAMAccessBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: tn.ns},
-		Spec: iamv1alpha1.AccessBindingSpec{
+		Spec: iamv1alpha1.IAMAccessBindingSpec{
 			Subjects: []iamv1alpha1.Subject{{ServiceAccountRef: &iamv1alpha1.LocalServiceAccountRef{Name: saName}}},
 			RoleRef:  iamv1alpha1.RoleRef{Name: role},
 			Target:   iamv1alpha1.Target{Resources: []iamv1alpha1.ResourceRef{{Type: "registry.registries", ID: target}}},
@@ -57,7 +57,7 @@ func newAB(tn tenant, name, saName, role, target string) *iamv1alpha1.AccessBind
 	}
 }
 
-func createAB(t *testing.T, ab *iamv1alpha1.AccessBinding) {
+func createAB(t *testing.T, ab *iamv1alpha1.IAMAccessBinding) {
 	t.Helper()
 	if err := k8s.Create(context.Background(), ab); err != nil {
 		t.Fatalf("create AB: %v", err)
@@ -65,18 +65,18 @@ func createAB(t *testing.T, ab *iamv1alpha1.AccessBinding) {
 	t.Cleanup(func() { forceDelete(t, ab) })
 }
 
-func getAB(t *testing.T, ab *iamv1alpha1.AccessBinding) *iamv1alpha1.AccessBinding {
+func getAB(t *testing.T, ab *iamv1alpha1.IAMAccessBinding) *iamv1alpha1.IAMAccessBinding {
 	t.Helper()
-	out := &iamv1alpha1.AccessBinding{}
+	out := &iamv1alpha1.IAMAccessBinding{}
 	if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(ab), out); err != nil {
 		t.Fatalf("get AB: %v", err)
 	}
 	return out
 }
 
-func waitABReady(t *testing.T, ab *iamv1alpha1.AccessBinding) *iamv1alpha1.AccessBinding {
+func waitABReady(t *testing.T, ab *iamv1alpha1.IAMAccessBinding) *iamv1alpha1.IAMAccessBinding {
 	t.Helper()
-	var cur *iamv1alpha1.AccessBinding
+	var cur *iamv1alpha1.IAMAccessBinding
 	eventually(t, waitReady, func() error {
 		cur = getAB(t, ab)
 		if cur.Status.ObservedGeneration != cur.Generation {
@@ -107,7 +107,7 @@ func activeBindingsOf(uid string) []*iamv1.AccessBinding {
 }
 
 // readySA — учётка арендатора, доведённая до Ready.
-func readySA(t *testing.T, tn tenant, name string) *iamv1alpha1.ServiceAccount {
+func readySA(t *testing.T, tn tenant, name string) *iamv1alpha1.IAMServiceAccount {
 	t.Helper()
 	sa := newSA(tn, name)
 	createSA(t, sa)
@@ -150,17 +150,17 @@ func TestABPolicyRefusalsHaveLawfulTwins(t *testing.T) {
 	readySA(t, tn, "zot-pol")
 	cases := []struct {
 		name   string
-		mutate func(ab *iamv1alpha1.AccessBinding)
+		mutate func(ab *iamv1alpha1.IAMAccessBinding)
 		reason string
 	}{
-		{"role outside the allowed list", func(ab *iamv1alpha1.AccessBinding) { ab.Spec.RoleRef.Name = "registry.admin" }, iamv1alpha1.ReasonForbidden},
-		{"system class with an ordinary role", func(ab *iamv1alpha1.AccessBinding) {
+		{"role outside the allowed list", func(ab *iamv1alpha1.IAMAccessBinding) { ab.Spec.RoleRef.Name = "registry.admin" }, iamv1alpha1.ReasonForbidden},
+		{"system class with an ordinary role", func(ab *iamv1alpha1.IAMAccessBinding) {
 			ab.Spec.Subjects = []iamv1alpha1.Subject{{SystemClass: &iamv1alpha1.SystemClassRef{Name: "anonymous"}}}
 		}, iamv1alpha1.ReasonForbidden},
-		{"user subject from a non-platform author", func(ab *iamv1alpha1.AccessBinding) {
+		{"user subject from a non-platform author", func(ab *iamv1alpha1.IAMAccessBinding) {
 			ab.Spec.Subjects = []iamv1alpha1.Subject{{User: &iamv1alpha1.PrincipalRef{ID: "usr1"}}}
 		}, iamv1alpha1.ReasonForbidden},
-		{"target type without a resolver", func(ab *iamv1alpha1.AccessBinding) {
+		{"target type without a resolver", func(ab *iamv1alpha1.IAMAccessBinding) {
 			ab.Spec.Target.Resources[0].Type = "registry.repositories"
 		}, iamv1alpha1.ReasonForbidden},
 	}
@@ -308,9 +308,9 @@ func TestABTargetChangeCreatesNewBindingBeforeRevokingTheOld(t *testing.T) {
 	createAB(t, ab)
 	first := waitABReady(t, ab)
 	patchObj(t, ab, func(o client.Object) {
-		o.(*iamv1alpha1.AccessBinding).Spec.Target.Resources[0].ID = "def456"
+		o.(*iamv1alpha1.IAMAccessBinding).Spec.Target.Resources[0].ID = "def456"
 	})
-	var second *iamv1alpha1.AccessBinding
+	var second *iamv1alpha1.IAMAccessBinding
 	eventually(t, waitReady, func() error {
 		second = getAB(t, ab)
 		if second.Status.ID == first.Status.ID || second.Status.Replaced != nil || second.Status.ObservedGeneration != second.Generation {
@@ -351,7 +351,7 @@ func TestABSecondTargetChangeDoesNotForgetTheReplacedBinding(t *testing.T) {
 	createAB(t, ab)
 	first := waitABReady(t, ab).Status.ID
 	fakeK.FailOperation("POST", "^/iam/v1/accessBindings/"+first+":revoke$", codes.Unavailable, 2)
-	patchObj(t, ab, func(o client.Object) { o.(*iamv1alpha1.AccessBinding).Spec.Target.Resources[0].ID = "tgb" })
+	patchObj(t, ab, func(o client.Object) { o.(*iamv1alpha1.IAMAccessBinding).Spec.Target.Resources[0].ID = "tgb" })
 	eventually(t, waitReady, func() error {
 		cur := getAB(t, ab)
 		if cur.Status.ID == "" || cur.Status.ID == first || cur.Status.Replaced == nil {
@@ -359,7 +359,7 @@ func TestABSecondTargetChangeDoesNotForgetTheReplacedBinding(t *testing.T) {
 		}
 		return nil
 	})
-	patchObj(t, ab, func(o client.Object) { o.(*iamv1alpha1.AccessBinding).Spec.Target.Resources[0].ID = "tgc" })
+	patchObj(t, ab, func(o client.Object) { o.(*iamv1alpha1.IAMAccessBinding).Spec.Target.Resources[0].ID = "tgc" })
 	eventually(t, waitReady, func() error {
 		cur := getAB(t, ab)
 		if cur.Status.Replaced != nil || cur.Status.ObservedGeneration != cur.Generation {
@@ -425,7 +425,7 @@ func TestABDeletionRevokesAndOrphanDoesNot(t *testing.T) {
 	}
 	eventually(t, waitReady, func() error {
 		for _, obj := range []client.Object{ab, orphan} {
-			if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(obj), &iamv1alpha1.AccessBinding{}); !apierrors.IsNotFound(err) {
+			if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(obj), &iamv1alpha1.IAMAccessBinding{}); !apierrors.IsNotFound(err) {
 				return fmt.Errorf("%s still present", obj.GetName())
 			}
 		}

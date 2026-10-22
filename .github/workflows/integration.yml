@@ -47,6 +47,31 @@ jobs:
       - name: Clone the code
         uses: actions/checkout@v4
 
+      - name: Source provenance before runtime checks
+        run: |
+          python3 -I - before <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+
+          phase = sys.argv[1]
+          assert phase in ('before', 'after'), phase
+          head = git('rev-parse', 'HEAD')
+          assert head == os.environ['GITHUB_SHA'], 'source HEAD differs from event SHA'
+          assert not git('status', '--porcelain', '--untracked-files=no'), 'tracked source changed'
+          if phase == 'before':
+              assert not git('ls-files', '--others', '--exclude-standard'), 'initial checkout has untracked files'
+          print('OPERATOR_SOURCE_V1 ' + json.dumps({
+              'phase': phase, 'head': head, 'tree': git('rev-parse', 'HEAD^{tree}'),
+              'tracked_clean': True, 'run_id': int(os.environ['GITHUB_RUN_ID']),
+              'run_attempt': int(os.environ['GITHUB_RUN_ATTEMPT']), 'job': os.environ['GITHUB_JOB'],
+          }, sort_keys=True))
+          PY
+
       - name: Clone kaname at the pinned revision
         uses: actions/checkout@v4
         with:
@@ -136,12 +161,36 @@ jobs:
           make test-integration > "$RUNNER_TEMP/integration.log" 2>&1 || rc=$?
           cat "$RUNNER_TEMP/integration.log"
           echo "integration rc=$rc"
-          grep -E '^(=== RUN|--- (PASS|FAIL|SKIP)|PASS|FAIL|ok )|residue census|NOT EXECUTED|УСЛОВИЕ НЕ СОЗДАНО' "$RUNNER_TEMP/integration.log" | tail -60 || true
           case "$rc" in
             0) ;;
             75) echo "::error title=CONDITION NOT CREATED::it-stand.sh could not create its condition — no verdict about the tree"; exit 1 ;;
             *) exit "$rc" ;;
           esac
+
+      - name: Source provenance after runtime checks
+        run: |
+          python3 -I - after <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+
+          phase = sys.argv[1]
+          assert phase in ('before', 'after'), phase
+          head = git('rev-parse', 'HEAD')
+          assert head == os.environ['GITHUB_SHA'], 'source HEAD differs from event SHA'
+          assert not git('status', '--porcelain', '--untracked-files=no'), 'tracked source changed'
+          if phase == 'before':
+              assert not git('ls-files', '--others', '--exclude-standard'), 'initial checkout has untracked files'
+          print('OPERATOR_SOURCE_V1 ' + json.dumps({
+              'phase': phase, 'head': head, 'tree': git('rev-parse', 'HEAD^{tree}'),
+              'tracked_clean': True, 'run_id': int(os.environ['GITHUB_RUN_ID']),
+              'run_attempt': int(os.environ['GITHUB_RUN_ATTEMPT']), 'job': os.environ['GITHUB_JOB'],
+          }, sort_keys=True))
+          PY
 
       - name: kaname diagnostics on failure
         if: failure()

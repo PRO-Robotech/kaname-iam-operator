@@ -104,8 +104,8 @@ type KeySpec struct {
 	Delivery KeyDelivery `json:"delivery"`
 }
 
-// ServiceAccountSpec — желаемое состояние учётки kaname.
-type ServiceAccountSpec struct {
+// IAMServiceAccountSpec — желаемое состояние учётки kaname.
+type IAMServiceAccountSpec struct {
 	// Name — имя учётки в kaname, уникальное в аккаунте. Неизменяемо.
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`
 	// +kubebuilder:validation:MaxLength=63
@@ -182,8 +182,8 @@ type KeyStatus struct {
 	Previous *PreviousKey `json:"previous,omitempty"`
 }
 
-// ServiceAccountStatus — наблюдаемое состояние учётки.
-type ServiceAccountStatus struct {
+// IAMServiceAccountStatus — наблюдаемое состояние учётки.
+type IAMServiceAccountStatus struct {
 	// ObservedGeneration — поколение spec, по которому выставлены условия.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
@@ -226,38 +226,38 @@ type ServiceAccountStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
-// ServiceAccount — учётка kaname IAM с ключами, доставляемыми в Vault.
+// IAMServiceAccount — учётка kaname IAM с ключами, доставляемыми в Vault.
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:shortName=ksa,categories=kaname-iam
+// +kubebuilder:resource:shortName=iamsa,categories=kaname-iam
 // +kubebuilder:printcolumn:name="KanameName",type=string,JSONPath=`.spec.name`
 // +kubebuilder:printcolumn:name="ID",type=string,JSONPath=`.status.id`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
-type ServiceAccount struct {
+type IAMServiceAccount struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   ServiceAccountSpec   `json:"spec"`
-	Status ServiceAccountStatus `json:"status,omitempty"`
+	Spec   IAMServiceAccountSpec   `json:"spec"`
+	Status IAMServiceAccountStatus `json:"status,omitempty"`
 }
 
-// ServiceAccountList — список ServiceAccount.
+// IAMServiceAccountList — список IAMServiceAccount.
 // +kubebuilder:object:root=true
-type ServiceAccountList struct {
+type IAMServiceAccountList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []ServiceAccount `json:"items"`
+	Items           []IAMServiceAccount `json:"items"`
 }
 
 // IsEnabled — включена ли учётка по spec (умолчание — да).
-func (s *ServiceAccountSpec) IsEnabled() bool {
+func (s *IAMServiceAccountSpec) IsEnabled() bool {
 	return s.Enabled == nil || *s.Enabled
 }
 
 // EffectiveDeletionPolicy — политика удаления с умолчанием Delete.
-func (s *ServiceAccountSpec) EffectiveDeletionPolicy() DeletionPolicy {
+func (s *IAMServiceAccountSpec) EffectiveDeletionPolicy() DeletionPolicy {
 	if s.DeletionPolicy == "" {
 		return DeletionPolicyDelete
 	}
@@ -265,7 +265,7 @@ func (s *ServiceAccountSpec) EffectiveDeletionPolicy() DeletionPolicy {
 }
 
 // KeyStatusByName — указатель на состояние ключа по имени либо nil.
-func (s *ServiceAccountStatus) KeyStatusByName(name string) *KeyStatus {
+func (s *IAMServiceAccountStatus) KeyStatusByName(name string) *KeyStatus {
 	for i := range s.Keys {
 		if s.Keys[i].Name == name {
 			return &s.Keys[i]
