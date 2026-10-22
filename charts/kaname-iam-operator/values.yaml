@@ -56,6 +56,11 @@ config:
     # гарантии допуска: policy.admissionGuard чарт заполняет сам именами своих
     # политик, когда admission.enabled; без допуска user/group отвергаются.
     platformPrincipals: []
+    # Срок вступления в силу версии политики допуска, увиденной оператором:
+    # kube-apiserver перечитывает политики раз в секунду, каждый экземпляр —
+    # со своим отставанием. Пока срок не истёк, запись о версии не доказывает
+    # смены spec, и rewitness не исполняется. Не меньше 1s.
+    admissionEnforcementDelay: 10s
     # тип цели -> объект k8s, подтверждающий цель в namespace CR.
     targetResolvers: {}
   delivery:

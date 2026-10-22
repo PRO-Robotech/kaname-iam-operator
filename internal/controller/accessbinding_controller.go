@@ -116,6 +116,11 @@ func (r *AccessBindingReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 	res, err := p.reconcile(ctx)
 	ab.Status.ObservedGeneration = ab.Generation
+	// Увиденная версия политики допуска вступает в силу по истечении срока:
+	// проход в этот момент закрепляет её запись в свидетельстве.
+	if err == nil && p.recheck > 0 && (res.RequeueAfter == 0 || p.recheck < res.RequeueAfter) {
+		res.RequeueAfter = p.recheck
+	}
 	return p.finish(ctx, res, err)
 }
 
@@ -124,6 +129,9 @@ type abPass struct {
 	ab        *iamv1alpha1.AccessBinding
 	saved     *iamv1alpha1.AccessBindingStatus
 	resyncNow bool
+	// recheck — через сколько вступает в силу ближайшая увиденная версия
+	// политики допуска (Guarantee.RecheckAfter); 0 — ждать нечего.
+	recheck time.Duration
 }
 
 func (p *abPass) now() time.Time { return p.r.now() }
@@ -397,20 +405,27 @@ func (p *abPass) reconcile(ctx context.Context) (ctrl.Result, error) {
 // отзывается (reject), и Orphan её не оставляет; pending — цель не найдена
 // либо не готова: ждать, ничего не отзывая. Цель «вся область» объекта
 // namespace не называет: подтверждать нечего, её пределы — область выдачи из
-// аннотаций namespace. Свидетельство допуска проход пишет в status.
+// аннотаций namespace.
+//
+// Свидетельство допуска проход пишет в status с первого прохода, когда
+// перечень policy.admissionGuard не пуст, — и тогда, когда выдаче гарантия не
+// нужна: иначе правку политики на месте до того, как выдача перешла на цель
+// «вся область», оператор не отличил бы от политики, стоявшей всегда. Отказ
+// гарантии запрещает только выдачу, которой она нужна.
 func (p *abPass) judge(ctx context.Context) (forbid, pending *policy.Violation, err error) {
 	ab := p.ab
 	if v := policy.Evaluate(p.r.Config.Policy, ab); v != nil {
 		return v, nil, nil
 	}
-	if policy.NeedsAdmissionGuarantee(ab) {
+	if needs := policy.NeedsAdmissionGuarantee(ab); needs || len(p.r.Config.Policy.AdmissionGuard) > 0 {
 		g, err := policy.CheckAdmissionGuarantee(ctx, p.r.Reader, p.r.Config.Policy, ab, p.now())
 		if err != nil {
 			return nil, nil, err
 		}
 		ab.Status.AdmissionWitness = g.Witness
+		p.recheck = g.RecheckAfter
 		p.observeRewitness(g)
-		if g.Violation != nil {
+		if g.Violation != nil && needs {
 			return g.Violation, nil, nil
 		}
 	}
@@ -432,12 +447,12 @@ func (p *abPass) observeRewitness(g policy.Guarantee) {
 		p.r.Recorder.Eventf(p.ab, nil, corev1.EventTypeNormal, "Rewitnessed", "Reconcile",
 			"annotation %s=%s: the standing admission policies are witnessed for the current spec", iamv1alpha1.AnnotationRewitness, g.Rewitness)
 	default:
-		msg := "the admission policies are not standing or were not yet seen by the operator"
+		msg := "the admission policies are not standing, were not yet seen by the operator or have not taken effect"
 		if g.Violation != nil {
 			msg = g.Violation.Message
 		}
 		p.r.Recorder.Eventf(p.ab, nil, corev1.EventTypeWarning, "RewitnessIgnored", "Reconcile",
-			"annotation %s=%s is not honoured (%s); set a new value once status.admissionWitness names the standing policies",
+			"annotation %s=%s is not honoured (%s); set a new value once every record of status.admissionWitness names the uid and metadata.generation of the standing policy and binding and carries no pendingSince",
 			iamv1alpha1.AnnotationRewitness, g.Rewitness, msg)
 	}
 }
@@ -726,6 +741,10 @@ func (p *abPass) apply(ctx context.Context, verb iamv1alpha1.OperationVerb, subj
 // выдача допустима: выдачу, которую политика оператора запрещает (отзыв уже
 // идёт — Rejected/PolicyNarrowed — либо запрет впервые виден сейчас), Orphan
 // не оставляет — она отзывается тем же порядком и повторяется до отзыва.
+// Выдачу, чей тип цели больше не разрешается (RESTMapper не знает ресурса:
+// снят CRD объекта цели), судить нечем: Orphan её тоже не оставляет, и
+// удаление завершается отзывом по её id, а не держит CR и его namespace в
+// Terminating, пока тип не вернётся.
 func (p *abPass) finalize(ctx context.Context) (ctrl.Result, error) {
 	ab := p.ab
 	if !controllerutil.ContainsFinalizer(ab, iamv1alpha1.Finalizer) {
@@ -733,14 +752,19 @@ func (p *abPass) finalize(ctx context.Context) (ctrl.Result, error) {
 	}
 	if ab.Spec.EffectiveDeletionPolicy() == iamv1alpha1.DeletionPolicyOrphan {
 		forbid, _, err := p.judge(ctx)
-		if err != nil {
+		what := "deletionPolicy Orphan does not keep a binding the operator policy forbids, withdrawing it"
+		switch {
+		case meta.IsNoMatchError(err):
+			forbid = &policy.Violation{Reason: iamv1alpha1.ReasonForbidden, Message: fmt.Sprintf("the target cannot be judged: %v", err)}
+			what = "deletionPolicy Orphan does not keep a binding whose target type does not resolve, withdrawing it"
+		case err != nil:
 			return ctrl.Result{}, err
 		}
 		if forbid == nil && !p.narrowed() {
 			return p.removeFinalizer(ctx)
 		}
 		if forbid != nil && !p.narrowed() && p.holds() {
-			p.announceWithdrawal(forbid, "deletionPolicy Orphan does not keep a binding the operator policy forbids, withdrawing it")
+			p.announceWithdrawal(forbid, what)
 			p.cond(iamv1alpha1.ConditionRejected, metav1.ConditionTrue, iamv1alpha1.ReasonPolicyNarrowed, forbid.Message)
 		}
 	}

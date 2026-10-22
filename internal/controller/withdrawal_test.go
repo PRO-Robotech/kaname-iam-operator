@@ -424,7 +424,7 @@ func TestABReinstalledGuardWithdrawsAndThePlatformRewitnessRestores(t *testing.T
 	ab := userAB(tn, "guard-reinstall", "usr-reinstall")
 	createAB(t, ab)
 	cur := waitABReady(t, ab)
-	granted, gen := cur.Status.ID, cur.Generation
+	granted := cur.Status.ID
 	lost := testutil.ToFloat64(metrics.Withdrawals.WithLabelValues(iamv1alpha1.ReasonAdmissionGuaranteeLost))
 
 	removeAdmissionGuard(t)
@@ -457,7 +457,7 @@ func TestABReinstalledGuardWithdrawsAndThePlatformRewitnessRestores(t *testing.T
 	})
 	respec(t, ab, "early")
 	consistently(t, 2*time.Second, regrant)
-	gen = getAB(t, ab).Generation
+	gen := getAB(t, ab).Generation
 
 	inForce(t, ab)
 	setAnnotation(t, ab, iamv1alpha1.AnnotationRewitness, "after-"+randSuffix())

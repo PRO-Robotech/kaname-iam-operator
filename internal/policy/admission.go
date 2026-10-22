@@ -11,6 +11,7 @@ import (
 
 	admissionv1 "k8s.io/api/admissionregistration/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	iamv1alpha1 "github.com/PRO-Robotech/kaname-iam-operator/api/v1alpha1"
@@ -43,66 +44,95 @@ type Guarantee struct {
 }
 
 // CheckAdmissionGuarantee подтверждает, что подлинность аннотации created-by
-// и субъектов user/group объекта ab держит допуск: каждая политика из names
-// (ValidatingAdmissionPolicy) и её привязка с тем же именем стоят в кластере,
-// отказывают (failurePolicy Fail, validationActions Deny), не сужены
-// параметрами и выборками и стояли — той же версией — уже тогда, когда
-// записан текущий spec объекта (его последняя смена, поколение ab.Generation).
+// и субъектов user/group объекта ab держит допуск: каждая политика из
+// p.AdmissionGuard (ValidatingAdmissionPolicy) и её привязка с тем же именем
+// стоят в кластере, отказывают (failurePolicy Fail, validationActions Deny),
+// не сужены параметрами и выборками и исполнялись — той же версией — уже
+// тогда, когда записан текущий spec объекта (его последняя смена, поколение
+// ab.Generation). now — часы оператора.
 //
 // Без этого аннотация — слово клиента: тот, кто вправе писать AccessBinding,
 // пишет в created-by имя принципала платформы, а смену spec, пока политик
-// нет (или пока они правлены в пропускающие), не судит никто. Стояние
+// нет (или пока они правлены в пропускающие), не судит никто. Исполнение
 // политики при записи spec доказывает запись свидетельства о ней
 // (ab.Status.AdmissionWitness), по одной на политику: объект k8s с тем же uid
 // существует непрерывно, а metadata.generation растёт при каждой правке его
 // spec, поэтому политика и привязка с записанными uid и поколениями стояли
-// неизменными от записи до сейчас. Запись доказывает смены spec после
-// поколения, при котором сделана; запись поколения 0 — любые. Пишется она:
-//   - при первой встрече с политикой, старшей самого объекта, — поколения 0:
-//     стояла при любой записи объекта;
-//   - при первой встрече с политикой, моложе объекта, при переустановке
-//     (новый uid) и при правке на месте (новое поколение) — текущего
-//     поколения: текущий spec мог быть записан без неё либо при другой её
-//     версии, и гарантию даёт только следующая смена spec;
-//   - по аннотации rewitness (ставит только платформа, сверив spec) —
-//     поколения 0, но лишь когда все политики уже записаны и стоят теми же,
-//     а значение аннотации новое против учтённого при той записи: значит, оно
-//     поставлено после неё, при этих политиках, и подлинно. Значение,
-//     стоявшее раньше, чем политики увидены, учитывается без исполнения.
+// неизменными от записи до сейчас.
 //
-// Записи политик, не названных в names, не трогаются: смена состава перечня
+// Стоять — ещё не исполняться: kube-apiserver перечитывает политики
+// периодически (раз в секунду), каждый экземпляр — со своим отставанием, а
+// оператор читает их мимо него. Поэтому версия, впервые увиденная оператором,
+// вступает в силу по истечении p.AdmissionEnforcementDelay от первой встречи
+// с ней: до того её запись несёт pendingSince и не доказывает ни одного
+// поколения spec, а значение rewitness при ней не исполняется. Первый проход
+// после срока снимает pendingSince и ставит записи текущее поколение — со
+// следующей смены spec запись его доказывает. Политика старше объекта, только
+// если создана раньше него больше чем на срок и секунду (точность отметок
+// времени k8s — секунда; равные отметки старшинства не доказывают).
+//
+// Запись доказывает смены spec после поколения, при котором поставлена;
+// запись поколения 0 — любые. Пишется она:
+//   - при первой встрече с политикой, старшей самого объекта, — поколения 0:
+//     исполнялась при любой записи объекта;
+//   - при первой встрече с политикой, моложе объекта, при переустановке
+//     (новый uid) и при правке на месте (новое поколение) — с pendingSince, а
+//     по истечении срока — текущего поколения: текущий spec мог быть записан
+//     без неё либо при другой её версии, и гарантию даёт только следующая
+//     смена spec;
+//   - по аннотации rewitness (ставит только платформа, сверив spec) —
+//     поколения 0, но лишь когда все политики уже записаны в силе и стоят
+//     теми же, а значение аннотации новое против учтённого при той записи:
+//     значит, оно поставлено после неё, при исполнявшихся политиках, и
+//     подлинно. Значение, стоявшее раньше, учитывается без исполнения.
+//
+// Проход, нашедший гарантию, подтверждает её для текущего поколения spec и
+// значения created-by (ConfirmedGeneration, ConfirmedCreatedBy). Правка
+// политики на месте (смена values чарта) подтверждённый spec не отзывает: он
+// записан при прежней версии, которая тогда исполнялась, а смены spec и
+// created-by после правки подтверждение не покрывает. Переустановку, снятие
+// и отказ политики подтверждение не переживает: пока политики не было,
+// status, где оно лежит, мог писать кто угодно.
+//
+// Записи политик, не названных в перечне, не трогаются: смена состава перечня
 // не переписывает свидетельство прочих политик. Запись снятой политики
-// снимается — её uid не вернётся. Пустой names — гарантии нет вовсе, и не
+// снимается — её uid не вернётся. Пустой перечень — гарантии нет вовсе, и не
 // принимаются ни user/group, ни цель allInScope.
 //
 // Свидетельство пишется в status с проверкой resourceVersion, поэтому
 // поколение в записи — то, что было у объекта, когда политики читались, а
-// значение аннотации в нём — то, что стояло до записи.
+// значение аннотации в нём — то, что стояло до записи. RecheckAfter — когда
+// истекает срок ближайшей ещё не вступившей версии.
 //
-// Предел гарантии: правку политики между созданием объекта и первой встречей
-// оператора с ней старшинство политики не отличает — окно в один проход
-// реконсиляции после создания CR.
+// Предел гарантии. (1) Правку на месте политики, старшей объекта, между
+// созданием объекта и первым проходом оператора по нему (свидетельство
+// пишется с первого прохода и тогда, когда выдаче гарантия не нужна)
+// старшинство политики не отличает. (2) Срок вступления в силу держит, только
+// пока он не короче настоящего отставания каждого экземпляра kube-apiserver
+// и расхождения часов реплик оператора при смене лидера. (3) status держит
+// политика status, и правка её на месте, допустившая других писателей,
+// делает их слово свидетельством. (4) Политика судится по устройству
+// (наличие, отказ, охват), а не по содержанию выражений.
 func CheckAdmissionGuarantee(ctx context.Context, c client.Reader, p config.Policy, ab *iamv1alpha1.AccessBinding, now time.Time) (Guarantee, error) {
 	names := p.AdmissionGuard
-	_ = now
 	if len(names) == 0 {
 		return Guarantee{Violation: lost("user and group subjects and an allInScope target need the admission guarantee of annotation %s, and the operator configuration names no admission policy (policy.admissionGuard)", iamv1alpha1.AnnotationCreatedBy)}, nil
 	}
-	created, gen := ab.CreationTimestamp.Time, ab.Generation
-	var old []iamv1alpha1.AdmissionPolicyUIDs
-	accounted := ""
-	if w := ab.Status.AdmissionWitness; w != nil {
-		old, accounted = w.Policies, w.RewitnessNonce
+	createdBy := ab.Annotations[iamv1alpha1.AnnotationCreatedBy]
+	w := ab.Status.AdmissionWitness
+	if w == nil {
+		w = &iamv1alpha1.AdmissionWitness{}
 	}
+	accounted, confirmedGen, confirmedBy := w.RewitnessNonce, w.ConfirmedGeneration, w.ConfirmedCreatedBy
+	sw := &sweep{now: now, created: ab.CreationTimestamp.Time, delay: p.AdmissionEnforcementDelay.Duration, gen: ab.Generation, inForce: true}
 	// bad — политика не на месте либо не отказывает: её не исправит ни
 	// свидетельство, ни аннотация; late — политика стоит, но не доказано, что
-	// стояла при последней смене spec.
+	// исполнялась при последней смене spec.
 	var bad, late *Violation
-	confirmed := true
-	next := make([]iamv1alpha1.AdmissionPolicyUIDs, 0, len(old)+len(names))
-	for _, p := range old {
-		if !slices.Contains(names, p.Name) {
-			next = append(next, p)
+	next := make([]iamv1alpha1.AdmissionPolicyUIDs, 0, len(w.Policies)+len(names))
+	for _, rec := range w.Policies {
+		if !slices.Contains(names, rec.Name) {
+			next = append(next, rec)
 		}
 	}
 	for _, name := range names {
@@ -114,45 +144,22 @@ func CheckAdmissionGuarantee(ctx context.Context, c client.Reader, p config.Poli
 			bad = v
 		}
 		if vap == nil {
-			confirmed = false
+			sw.inForce = false
 			continue
 		}
-		live := iamv1alpha1.AdmissionPolicyUIDs{Name: name, PolicyUID: vap.UID, PolicyGeneration: vap.Generation,
-			BindingUID: bnd.UID, BindingGeneration: bnd.Generation, Generation: gen}
-		prev, seen := recordOf(old, name)
-		var why *Violation
-		switch {
-		case seen && sameVersion(prev, live):
-			live.Generation = prev.Generation
-			if prev.Generation >= gen {
-				why = lost("admission policy %s was installed or changed after this object was created and the operator had not seen it before the last spec change (generation %d)", name, gen)
-			}
-		case seen:
-			confirmed = false
-			why = changedSince(prev, live, gen)
-		default:
-			confirmed = false
-			switch {
-			case vap.CreationTimestamp.After(created):
-				why = lost("admission policy %s was installed after this object was created and the operator had not seen it before the last spec change (generation %d)", name, gen)
-			case bnd.CreationTimestamp.After(created):
-				why = lost("admission policy binding %s was installed after this object was created and the operator had not seen it before the last spec change (generation %d)", name, gen)
-			default:
-				// Старше объекта: стояла при любой его записи.
-				live.Generation = 0
-			}
-		}
+		prev, seen := recordOf(w.Policies, name)
+		live, why := sw.judge(name, vap, bnd, prev, seen)
 		if why != nil && late == nil {
 			late = why
 		}
 		next = append(next, live)
 	}
-	g := Guarantee{}
+	g := Guarantee{RecheckAfter: sw.recheck}
 	if nonce := ab.Annotations[iamv1alpha1.AnnotationRewitness]; nonce != accounted {
 		g.Rewitness = nonce
-		if nonce != "" && confirmed && bad == nil {
-			// Все политики записаны прежде и стоят теми же, значение новое
-			// против учтённого при записи: поставлено после неё, при них.
+		if nonce != "" && sw.inForce && bad == nil {
+			// Все политики записаны прежде в силе и стоят теми же, значение
+			// новое против учтённого при записи: поставлено после неё, при них.
 			g.Rewitnessed, late = true, nil
 			for i := range next {
 				if slices.Contains(names, next[i].Name) {
@@ -162,14 +169,116 @@ func CheckAdmissionGuarantee(ctx context.Context, c client.Reader, p config.Poli
 		}
 		accounted = nonce
 	}
-	if len(next) > 0 || accounted != "" {
-		g.Witness = &iamv1alpha1.AdmissionWitness{Policies: next, RewitnessNonce: accounted}
+	// Подтверждение не переживает переустановки, снятия и отказа политики;
+	// правку на месте переживает — для того же spec и того же created-by.
+	if sw.reinstalled || bad != nil {
+		confirmedGen, confirmedBy = 0, ""
+	}
+	if late != nil && confirmedGen != 0 && confirmedGen == sw.gen && confirmedBy == createdBy {
+		late = nil
+	}
+	if bad == nil && late == nil {
+		confirmedGen, confirmedBy = sw.gen, createdBy
+	}
+	if len(next) > 0 || accounted != "" || confirmedGen != 0 {
+		g.Witness = &iamv1alpha1.AdmissionWitness{Policies: next, RewitnessNonce: accounted,
+			ConfirmedGeneration: confirmedGen, ConfirmedCreatedBy: confirmedBy}
 	}
 	g.Violation = bad
 	if g.Violation == nil {
 		g.Violation = late
 	}
 	return g, nil
+}
+
+// sweep — состояние одной сверки гарантии по всем политикам перечня.
+type sweep struct {
+	now, created time.Time
+	delay        time.Duration
+	// gen — поколение spec объекта.
+	gen int64
+	// inForce — каждая политика уже записана прежним проходом в силе и стоит
+	// той же версией; reinstalled — увиденная политика переустановлена.
+	inForce, reinstalled bool
+	// recheck — через сколько вступает в силу ближайшая увиденная версия.
+	recheck time.Duration
+}
+
+// wait учитывает версию, увиденную в since: она вступает в силу через delay.
+func (s *sweep) wait(since time.Time) {
+	if d := since.Add(s.delay).Sub(s.now); d > 0 && (s.recheck == 0 || d < s.recheck) {
+		s.recheck = d
+	}
+}
+
+// judge — запись о стоящей политике name (vap, bnd) по прежней записи prev
+// (seen — она есть) и отказ, если запись не доказывает текущий spec.
+func (s *sweep) judge(name string, vap *admissionv1.ValidatingAdmissionPolicy, bnd *admissionv1.ValidatingAdmissionPolicyBinding,
+	prev iamv1alpha1.AdmissionPolicyUIDs, seen bool) (iamv1alpha1.AdmissionPolicyUIDs, *Violation) {
+	live := iamv1alpha1.AdmissionPolicyUIDs{Name: name, PolicyUID: vap.UID, PolicyGeneration: vap.Generation,
+		BindingUID: bnd.UID, BindingGeneration: bnd.Generation, Generation: s.gen}
+	seenNow := metav1.NewTime(s.now)
+	switch {
+	case seen && sameVersion(prev, live) && prev.PendingSince != nil:
+		s.inForce = false
+		if since := prev.PendingSince.Time; s.now.Before(since.Add(s.delay)) {
+			// Ещё не в силе: запись не доказывает и текущий spec.
+			live.PendingSince = prev.PendingSince
+			s.wait(since)
+			return live, notInForce(name, since, s.delay, s.gen)
+		}
+		// В силе: текущий spec прочитан до этого прохода, запись докажет его
+		// следующие смены.
+		return live, lateFor(name, s.gen)
+	case seen && sameVersion(prev, live):
+		live.Generation = prev.Generation
+		if prev.Generation >= s.gen {
+			return live, lateFor(name, s.gen)
+		}
+		return live, nil
+	case seen:
+		s.inForce = false
+		s.reinstalled = s.reinstalled || prev.PolicyUID != live.PolicyUID || prev.BindingUID != live.BindingUID
+		live.PendingSince = &seenNow
+		s.wait(s.now)
+		return live, changedSince(prev, live, s.gen)
+	}
+	s.inForce = false
+	var why *Violation
+	switch {
+	case !predates(vap.CreationTimestamp.Time, s.created, s.delay):
+		why = lost("admission policy %s was installed after this object was created, or less than policy.admissionEnforcementDelay (%s) before it, and the operator had not seen it in force before the last spec change (generation %d)", name, s.delay, s.gen)
+	case !predates(bnd.CreationTimestamp.Time, s.created, s.delay):
+		why = lost("admission policy binding %s was installed after this object was created, or less than policy.admissionEnforcementDelay (%s) before it, and the operator had not seen it in force before the last spec change (generation %d)", name, s.delay, s.gen)
+	default:
+		// Старше объекта на срок вступления в силу: исполнялась при любой
+		// его записи.
+		live.Generation = 0
+		return live, nil
+	}
+	live.PendingSince = &seenNow
+	s.wait(s.now)
+	return live, why
+}
+
+// predates — создан ли объект с отметкой policy раньше объекта с отметкой
+// object настолько, что исполнялся уже при его создании: на срок вступления в
+// силу и секунду точности отметок времени.
+func predates(policy, object time.Time, delay time.Duration) bool {
+	return object.Sub(policy) >= delay+time.Second
+}
+
+// lateFor — политика name стоит, но не доказано, что исполнялась при
+// последней смене spec (поколение gen).
+func lateFor(name string, gen int64) *Violation {
+	return lost("admission policy %s was installed or changed after this object was created and the operator had not seen it in force before the last spec change (generation %d)", name, gen)
+}
+
+// notInForce — версия политики name увидена в since, срок вступления в силу
+// delay ещё не истёк.
+func notInForce(name string, since time.Time, delay time.Duration, gen int64) *Violation {
+	return lost("admission policy %s was seen at %s and may not be enforced by the kube-apiserver until policy.admissionEnforcementDelay (%s) passes: the current spec (generation %d) is not proven by it",
+		name, since.UTC().Format(time.RFC3339), delay, gen)
 }
 
 // readPolicy читает политику name и её привязку. Нет одной из них — обе nil и
