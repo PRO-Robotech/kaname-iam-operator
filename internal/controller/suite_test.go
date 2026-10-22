@@ -25,8 +25,10 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/events"
 	clocktesting "k8s.io/utils/clock/testing"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	crconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -49,6 +51,11 @@ var (
 	testCfg  *config.Config
 	restCfg  *rest.Config
 	testRole = map[string]string{}
+
+	scheme       = runtime.NewScheme()
+	kanameCli    *kaname.Client
+	vaultCli     *vault.Client
+	stopOperator = func() {}
 )
 
 const (
@@ -79,7 +86,6 @@ func runSuite(m *testing.M) int {
 	defer func() { _ = env.Stop() }()
 	restCfg = cfg
 
-	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
 	_ = iamv1alpha1.AddToScheme(scheme)
 
@@ -154,40 +160,81 @@ delivery:
 		return 1
 	}
 
-	mgr, err := ctrl.NewManager(cfg, ctrl.Options{Scheme: scheme, Metrics: metricsserver.Options{BindAddress: "0"}})
+	kanameCli, vaultCli = kc, vc
+	stop, err := startOperator(testCfg)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "manager:", err)
+		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	deps := &Deps{
-		Kaname: kc, Vault: vc, Config: testCfg, Recorder: &events.FakeRecorder{},
-		Clock: clk, DriftInterval: 500 * time.Millisecond,
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	if err := SetupIndexes(ctx, mgr); err != nil {
-		fmt.Fprintln(os.Stderr, "indexes:", err)
-		return 1
-	}
-	if err := SetupServiceAccountReconciler(mgr, deps); err != nil {
-		fmt.Fprintln(os.Stderr, "SA reconciler:", err)
-		return 1
-	}
-	if err := SetupAccessBindingReconciler(mgr, deps); err != nil {
-		fmt.Fprintln(os.Stderr, "AB reconciler:", err)
-		return 1
-	}
-	go func() {
-		if err := mgr.Start(ctx); err != nil {
-			fmt.Fprintln(os.Stderr, "manager stopped:", err)
-		}
-	}()
+	stopOperator = stop
+	defer func() { stopOperator() }()
 	k8s, err = client.New(cfg, client.Options{Scheme: scheme})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "client:", err)
 		return 1
 	}
 	return m.Run()
+}
+
+// startOperator запускает менеджер с обоими контроллерами по конфигурации
+// cfg; stop останавливает его и ждёт, пока проходы допишут.
+func startOperator(cfg *config.Config) (stop func(), err error) {
+	// Имена контроллеров у перезапущенного менеджера те же, что у прежнего.
+	mgr, err := ctrl.NewManager(restCfg, ctrl.Options{Scheme: scheme, Metrics: metricsserver.Options{BindAddress: "0"},
+		Controller: crconfig.Controller{SkipNameValidation: ptr.To(true)}})
+	if err != nil {
+		return nil, fmt.Errorf("manager: %w", err)
+	}
+	deps := &Deps{
+		Kaname: kanameCli, Vault: vaultCli, Config: cfg, Recorder: &events.FakeRecorder{},
+		Clock: clk, DriftInterval: 500 * time.Millisecond,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := SetupIndexes(ctx, mgr); err != nil {
+		cancel()
+		return nil, fmt.Errorf("indexes: %w", err)
+	}
+	if err := SetupServiceAccountReconciler(mgr, deps); err != nil {
+		cancel()
+		return nil, fmt.Errorf("SA reconciler: %w", err)
+	}
+	if err := SetupAccessBindingReconciler(mgr, deps); err != nil {
+		cancel()
+		return nil, fmt.Errorf("AB reconciler: %w", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := mgr.Start(ctx); err != nil {
+			fmt.Fprintln(os.Stderr, "manager stopped:", err)
+		}
+	}()
+	return func() { cancel(); <-done }, nil
+}
+
+// restartOperator останавливает оператор и поднимает его по cfg — так
+// развёрнутый оператор видит смену своей конфигурации: контрольная сумма
+// конфигурации в шаблоне пода перезапускает под.
+func restartOperator(t *testing.T, cfg *config.Config) {
+	t.Helper()
+	stopOperator()
+	stop, err := startOperator(cfg)
+	if err != nil {
+		stopOperator = func() {}
+		t.Fatalf("restart operator: %v", err)
+	}
+	stopOperator = stop
+}
+
+// withPolicy перезапускает оператор с политикой пакета, правленной mutate
+// (mutate присваивает новые срезы, а не правит общие), и в конце пробы
+// возвращает политику пакета.
+func withPolicy(t *testing.T, mutate func(*config.Policy)) {
+	t.Helper()
+	cfg := *testCfg
+	mutate(&cfg.Policy)
+	restartOperator(t, &cfg)
+	t.Cleanup(func() { restartOperator(t, testCfg) })
 }
 
 func zapLevel() zapcore.Level {

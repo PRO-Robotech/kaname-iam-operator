@@ -5,6 +5,7 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // LocalServiceAccountRef — ссылка на CR ServiceAccount в том же namespace.
@@ -144,7 +145,10 @@ type AccessBindingSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self.all(k, size(self[k]) <= 63)",message="label values must be at most 63 characters"
 	// +optional
 	Labels map[string]string `json:"labels,omitempty"`
-	// DeletionPolicy — что делать с выдачей kaname при удалении CR.
+	// DeletionPolicy — что делать с выдачей kaname при удалении CR. Orphan
+	// касается только удаления: выдачу, ставшую недопустимой политикой
+	// оператора (Rejected/PolicyNarrowed), оператор отзывает при любой
+	// политике удаления.
 	// +kubebuilder:default=Delete
 	// +optional
 	DeletionPolicy DeletionPolicy `json:"deletionPolicy,omitempty"`
@@ -176,6 +180,32 @@ type ResolvedBinding struct {
 	// AccountID — аккаунт области: по нему ищется своя выдача.
 	// +optional
 	AccountID string `json:"accountId,omitempty"`
+}
+
+// AdmissionWitness — политики допуска, увиденные оператором, когда spec
+// объекта был поколения Generation. Объект k8s с тем же uid существует
+// непрерывно, поэтому политика, чей uid совпадает с увиденным, стояла и при
+// любой смене spec после Generation: гарантия допуска судится на последнюю
+// смену spec, а не на создание CR. Пишет только оператор (status), запись
+// идёт с проверкой resourceVersion: поколение в записи — то, что было у
+// объекта в момент чтения политик.
+type AdmissionWitness struct {
+	// Generation — поколение spec в момент, когда политики увидены.
+	Generation int64 `json:"generation"`
+	// Policies — увиденные политики и их привязки.
+	// +listType=map
+	// +listMapKey=name
+	Policies []AdmissionPolicyUIDs `json:"policies"`
+}
+
+// AdmissionPolicyUIDs — uid политики допуска и её привязки с тем же именем.
+type AdmissionPolicyUIDs struct {
+	// Name — имя политики и привязки.
+	Name string `json:"name"`
+	// PolicyUID — uid ValidatingAdmissionPolicy.
+	PolicyUID types.UID `json:"policyUID"`
+	// BindingUID — uid ValidatingAdmissionPolicyBinding.
+	BindingUID types.UID `json:"bindingUID"`
 }
 
 // ReplacedBinding — прежняя выдача, ждущая отзыва после заведения новой.
@@ -220,7 +250,11 @@ type AccessBindingStatus struct {
 	// уже выполнено.
 	// +optional
 	ResyncNonce string `json:"resyncNonce,omitempty"`
-	// Conditions — Ready, Synced, Conflict, SubjectPending, Drifted.
+	// AdmissionWitness — политики допуска, увиденные при прежнем поколении
+	// spec: ими гарантия допуска судится на последнюю смену spec.
+	// +optional
+	AdmissionWitness *AdmissionWitness `json:"admissionWitness,omitempty"`
+	// Conditions — Ready, Synced, Conflict, SubjectPending, Drifted, Rejected.
 	// +listType=map
 	// +listMapKey=type
 	// +optional

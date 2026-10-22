@@ -61,8 +61,11 @@ spec:
             properties:
               deletionPolicy:
                 default: Delete
-                description: DeletionPolicy — что делать с выдачей kaname при удалении
-                  CR.
+                description: |-
+                  DeletionPolicy — что делать с выдачей kaname при удалении CR. Orphan
+                  касается только удаления: выдачу, ставшую недопустимой политикой
+                  оператора (Rejected/PolicyNarrowed), оператор отзывает при любой
+                  политике удаления.
                 enum:
                 - Delete
                 - Orphan
@@ -232,6 +235,44 @@ spec:
           status:
             description: AccessBindingStatus — наблюдаемое состояние выдачи.
             properties:
+              admissionWitness:
+                description: |-
+                  AdmissionWitness — политики допуска, увиденные при прежнем поколении
+                  spec: ими гарантия допуска судится на последнюю смену spec.
+                properties:
+                  generation:
+                    description: Generation — поколение spec в момент, когда политики
+                      увидены.
+                    format: int64
+                    type: integer
+                  policies:
+                    description: Policies — увиденные политики и их привязки.
+                    items:
+                      description: AdmissionPolicyUIDs — uid политики допуска и её
+                        привязки с тем же именем.
+                      properties:
+                        bindingUID:
+                          description: BindingUID — uid ValidatingAdmissionPolicyBinding.
+                          type: string
+                        name:
+                          description: Name — имя политики и привязки.
+                          type: string
+                        policyUID:
+                          description: PolicyUID — uid ValidatingAdmissionPolicy.
+                          type: string
+                      required:
+                      - bindingUID
+                      - name
+                      - policyUID
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                required:
+                - generation
+                - policies
+                type: object
               bindingHash:
                 description: |-
                   BindingHash — отпечаток (субъекты, роль, область, цель, срок) действующей
@@ -239,7 +280,7 @@ spec:
                 type: string
               conditions:
                 description: Conditions — Ready, Synced, Conflict, SubjectPending,
-                  Drifted.
+                  Drifted, Rejected.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

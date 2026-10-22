@@ -97,6 +97,11 @@ const (
 	ConditionDrifted        = "Drifted"
 	ConditionConflict       = "Conflict"
 	ConditionSubjectPending = "SubjectPending"
+	// ConditionRejected — выдача запрещена политикой оператора либо не имеет
+	// гарантии допуска. Причина PolicyNarrowed — выдачу, которую объект уже
+	// держал в kaname, оператор отзывает (отозвал) и вновь не заводит, пока
+	// выдача снова не станет допустимой.
+	ConditionRejected = "Rejected"
 )
 
 // Причины условий.
@@ -123,4 +128,6 @@ const (
 	ReasonDeletionBlocked    = "DeletionBlocked"
 	ReasonKeysIssuing        = "Issuing"
 	ReasonVaultUnavailable   = "VaultUnavailable"
+	ReasonPolicyNarrowed     = "PolicyNarrowed"
+	ReasonPolicySatisfied    = "PolicySatisfied"
 )

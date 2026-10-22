@@ -12,6 +12,7 @@ import (
 	admissionv1 "k8s.io/api/admissionregistration/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -29,11 +30,11 @@ func guard(installed time.Time) []client.Object {
 	for _, n := range guardNames {
 		out = append(out,
 			&admissionv1.ValidatingAdmissionPolicy{
-				ObjectMeta: metav1.ObjectMeta{Name: n, CreationTimestamp: metav1.NewTime(installed)},
+				ObjectMeta: metav1.ObjectMeta{Name: n, UID: policyUID(n), CreationTimestamp: metav1.NewTime(installed)},
 				Spec:       admissionv1.ValidatingAdmissionPolicySpec{FailurePolicy: &fail},
 			},
 			&admissionv1.ValidatingAdmissionPolicyBinding{
-				ObjectMeta: metav1.ObjectMeta{Name: n, CreationTimestamp: metav1.NewTime(installed)},
+				ObjectMeta: metav1.ObjectMeta{Name: n, UID: bindingUID(n), CreationTimestamp: metav1.NewTime(installed)},
 				Spec: admissionv1.ValidatingAdmissionPolicyBindingSpec{PolicyName: n,
 					ValidationActions: []admissionv1.ValidationAction{admissionv1.Deny},
 					// Сервер заполняет выборку пустыми селекторами — охват это не сужает.
@@ -43,17 +44,41 @@ func guard(installed time.Time) []client.Object {
 	return out
 }
 
-func TestAdmissionGuaranteeHoldsOnlyWhenEveryFactHolds(t *testing.T) {
-	created := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+func policyUID(name string) types.UID  { return types.UID("policy-" + name) }
+func bindingUID(name string) types.UID { return types.UID("binding-" + name) }
+
+// seen — свидетельство тех политик, что ставит guard, при поколении gen.
+func seen(gen int64) *iamv1alpha1.AdmissionWitness {
+	w := &iamv1alpha1.AdmissionWitness{Generation: gen}
+	for _, n := range guardNames {
+		w.Policies = append(w.Policies, iamv1alpha1.AdmissionPolicyUIDs{Name: n, PolicyUID: policyUID(n), BindingUID: bindingUID(n)})
+	}
+	return w
+}
+
+// binding — объект поколения gen, созданный в created, со свидетельством w.
+func binding(created time.Time, gen int64, w *iamv1alpha1.AdmissionWitness) *iamv1alpha1.AccessBinding {
+	return &iamv1alpha1.AccessBinding{
+		ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(created), Generation: gen},
+		Status:     iamv1alpha1.AccessBindingStatus{AdmissionWitness: w},
+	}
+}
+
+func guardClient(objs []client.Object) client.Reader {
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
+	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
+}
+
+func TestAdmissionGuaranteeHoldsOnlyWhenEveryFactHolds(t *testing.T) {
+	created := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
 	check := func(names []string, mutate func([]client.Object) []client.Object) (*Violation, error) {
 		objs := guard(created.Add(-time.Hour))
 		if mutate != nil {
 			objs = mutate(objs)
 		}
-		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
-		return CheckAdmissionGuarantee(context.Background(), c, names, created)
+		v, _, err := CheckAdmissionGuarantee(context.Background(), guardClient(objs), names, binding(created, 1, nil))
+		return v, err
 	}
 	if v, err := check(guardNames, nil); v != nil || err != nil {
 		t.Fatalf("lawful twin refused: %v %v", v, err)
@@ -104,6 +129,91 @@ func TestAdmissionGuaranteeHoldsOnlyWhenEveryFactHolds(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Гарантия судится на последнюю смену spec: политика, поставленная ПОСЛЕ
+// создания объекта, держит его spec, если оператор видел её (тот же uid) при
+// прежнем поколении spec — объект с тем же uid существует непрерывно, значит,
+// стоял и при смене. Законный близнец — свидетельство поколения 1 у объекта
+// поколения 2; каждое отрицание меняет один факт.
+func TestAdmissionGuaranteeIsJudgedAtTheLastSpecChange(t *testing.T) {
+	created := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	objs := func() []client.Object { return guard(created.Add(time.Hour)) }
+	ab := binding(created, 2, seen(1))
+	v, w, err := CheckAdmissionGuarantee(context.Background(), guardClient(objs()), guardNames, ab)
+	if v != nil || err != nil {
+		t.Fatalf("lawful twin refused: policies seen at generation 1, spec changed to generation 2: %v %v", v, err)
+	}
+	if w == nil || w.Generation != 1 {
+		t.Fatalf("witness = %+v, want the generation-1 witness kept: it still proves every later spec change", w)
+	}
+
+	cases := []struct {
+		name    string
+		witness *iamv1alpha1.AdmissionWitness
+		want    string
+	}{
+		{"no witness, policies installed after the object", nil, "kio-writers was installed after"},
+		{"witness of the current generation", seen(2), "kio-writers was installed after"},
+		{"policy reinstalled since the witness", func() *iamv1alpha1.AdmissionWitness {
+			w := seen(1)
+			w.Policies[1].PolicyUID = "policy-kio-bindings-before"
+			return w
+		}(), "admission policy kio-bindings was installed after"},
+		{"binding reinstalled since the witness", func() *iamv1alpha1.AdmissionWitness {
+			w := seen(1)
+			w.Policies[0].BindingUID = "binding-kio-writers-before"
+			return w
+		}(), "admission policy binding kio-writers was installed after"},
+		{"witness of another policy set", &iamv1alpha1.AdmissionWitness{Generation: 1, Policies: seen(1).Policies[:1]}, "kio-bindings was installed after"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v, w, err := CheckAdmissionGuarantee(context.Background(), guardClient(objs()), guardNames, binding(created, 2, tc.witness))
+			if err != nil {
+				t.Fatalf("error instead of a refusal: %v", err)
+			}
+			if v == nil || v.Reason != iamv1alpha1.ReasonForbidden || !strings.Contains(v.Message, tc.want) {
+				t.Fatalf("violation = %+v, want Forbidden naming %q", v, tc.want)
+			}
+			// Свидетельство, которое ничего не доказывает, заменяется увиденным
+			// сейчас: оно докажет следующую смену spec.
+			if want := seen(2); w == nil || w.Generation != 2 || !equalWitness(w, want) {
+				t.Fatalf("witness = %+v, want %+v", w, want)
+			}
+		})
+	}
+
+	t.Run("policies predating the object need no witness and are witnessed", func(t *testing.T) {
+		v, w, err := CheckAdmissionGuarantee(context.Background(), guardClient(guard(created.Add(-time.Hour))), guardNames, binding(created, 5, nil))
+		if v != nil || err != nil {
+			t.Fatalf("refused: %v %v", v, err)
+		}
+		if want := seen(5); !equalWitness(w, want) {
+			t.Fatalf("witness = %+v, want %+v", w, want)
+		}
+	})
+	t.Run("an absent policy is not witnessed", func(t *testing.T) {
+		v, w, err := CheckAdmissionGuarantee(context.Background(), guardClient(objs()[1:]), guardNames, binding(created, 2, seen(1)))
+		if err != nil || v == nil || !strings.Contains(v.Message, "kio-writers is absent") {
+			t.Fatalf("violation = %+v, %v", v, err)
+		}
+		if w != nil {
+			t.Fatalf("witness = %+v, want none: the witnessed policy is gone and its uid never returns", w)
+		}
+	})
+}
+
+func equalWitness(a, b *iamv1alpha1.AdmissionWitness) bool {
+	if a == nil || b == nil || a.Generation != b.Generation || len(a.Policies) != len(b.Policies) {
+		return a == b
+	}
+	for i := range a.Policies {
+		if a.Policies[i] != b.Policies[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestNeedsAdmissionGuaranteeOnlyForUserGroupAndAllInScope(t *testing.T) {
