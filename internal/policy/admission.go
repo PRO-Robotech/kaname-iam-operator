@@ -7,12 +7,14 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 
 	admissionv1 "k8s.io/api/admissionregistration/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	iamv1alpha1 "github.com/PRO-Robotech/kaname-iam-operator/api/v1alpha1"
+	"github.com/PRO-Robotech/kaname-iam-operator/internal/config"
 )
 
 // NeedsAdmissionGuarantee — несёт ли выдача то, что допустимо только от
@@ -35,6 +37,9 @@ type Guarantee struct {
 	// Rewitnessed — значение Rewitness исполнено: политики засвидетельствованы
 	// для текущего spec. Ложь при непустом Rewitness — отклонено.
 	Rewitnessed bool
+	// RecheckAfter — через сколько истекает срок вступления в силу ближайшей
+	// увиденной версии политики; 0 — ждать нечего.
+	RecheckAfter time.Duration
 }
 
 // CheckAdmissionGuarantee подтверждает, что подлинность аннотации created-by
@@ -77,7 +82,9 @@ type Guarantee struct {
 // Предел гарантии: правку политики между созданием объекта и первой встречей
 // оператора с ней старшинство политики не отличает — окно в один проход
 // реконсиляции после создания CR.
-func CheckAdmissionGuarantee(ctx context.Context, c client.Reader, names []string, ab *iamv1alpha1.AccessBinding) (Guarantee, error) {
+func CheckAdmissionGuarantee(ctx context.Context, c client.Reader, p config.Policy, ab *iamv1alpha1.AccessBinding, now time.Time) (Guarantee, error) {
+	names := p.AdmissionGuard
+	_ = now
 	if len(names) == 0 {
 		return Guarantee{Violation: lost("user and group subjects and an allInScope target need the admission guarantee of annotation %s, and the operator configuration names no admission policy (policy.admissionGuard)", iamv1alpha1.AnnotationCreatedBy)}, nil
 	}

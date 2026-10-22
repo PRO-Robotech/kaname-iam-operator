@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	iamv1alpha1 "github.com/PRO-Robotech/kaname-iam-operator/api/v1alpha1"
+	"github.com/PRO-Robotech/kaname-iam-operator/internal/config"
 )
 
 var guardNames = []string{"kio-writers", "kio-bindings"}
@@ -103,7 +104,7 @@ func refused(t *testing.T, g Guarantee, err error, want string) {
 }
 
 func check(objs []client.Object, names []string, ab *iamv1alpha1.AccessBinding) (Guarantee, error) {
-	return CheckAdmissionGuarantee(context.Background(), guardClient(objs), names, ab)
+	return CheckAdmissionGuarantee(context.Background(), guardClient(objs), config.Policy{AdmissionGuard: names}, ab, time.Now())
 }
 
 func TestAdmissionGuaranteeHoldsOnlyWhenEveryFactHolds(t *testing.T) {

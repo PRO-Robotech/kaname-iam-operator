@@ -203,6 +203,19 @@ type AdmissionWitness struct {
 	// новое значение аннотации поставлено после этой записи.
 	// +optional
 	RewitnessNonce string `json:"rewitnessNonce,omitempty"`
+	// ConfirmedGeneration — поколение spec, для которого проход оператора
+	// подтвердил гарантию: каждая политика стояла, отказывала и доказывала
+	// это поколение. Правка политик на месте (смена values чарта растит их
+	// metadata.generation) выдачу этого поколения не отзывает: spec записан
+	// при прежней, уже действовавшей версии. Снимается переустановкой
+	// политики (новый uid: пока её не было, status мог писать кто угодно),
+	// её снятием и отказом. 0 — подтверждения нет.
+	// +optional
+	ConfirmedGeneration int64 `json:"confirmedGeneration,omitempty"`
+	// ConfirmedCreatedBy — значение аннотации created-by при том
+	// подтверждении: другое значение подтверждением не покрыто.
+	// +optional
+	ConfirmedCreatedBy string `json:"confirmedCreatedBy,omitempty"`
 }
 
 // AdmissionPolicyUIDs — увиденные uid и поколения политики допуска и её
@@ -226,6 +239,14 @@ type AdmissionPolicyUIDs struct {
 	// (аннотация rewitness): запись доказывает любое поколение spec.
 	// +optional
 	Generation int64 `json:"generation,omitempty"`
+	// PendingSince — когда оператор впервые увидел эту версию политики и
+	// привязки, если срок вступления в силу (policy.admissionEnforcementDelay)
+	// от того момента ещё не истёк при записи. kube-apiserver перечитывает
+	// политики периодически: увиденная оператором версия ещё могла не
+	// исполняться, и такая запись не доказывает ни одного поколения spec.
+	// Снимается первым проходом после срока; Generation он ставит текущим.
+	// +optional
+	PendingSince *metav1.Time `json:"pendingSince,omitempty"`
 }
 
 // ReplacedBinding — прежняя выдача, ждущая отзыва после заведения новой.

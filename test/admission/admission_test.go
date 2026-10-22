@@ -583,7 +583,7 @@ func TestChartAdmissionGuardIsSatisfiedByItsOwnPolicies(t *testing.T) {
 		t.Fatal(err)
 	}
 	created := &iamv1alpha1.AccessBinding{ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(time.Now().Add(time.Minute)), Generation: 1}}
-	g, err := policy.CheckAdmissionGuarantee(context.Background(), admin, c.Policy.AdmissionGuard, created)
+	g, err := policy.CheckAdmissionGuarantee(context.Background(), admin, c.Policy, created, time.Now())
 	if v := g.Violation; err != nil || v != nil {
 		t.Fatalf("the operator refuses the chart's own admission policies: %v %v", v, err)
 	}

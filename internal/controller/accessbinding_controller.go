@@ -404,7 +404,7 @@ func (p *abPass) judge(ctx context.Context) (forbid, pending *policy.Violation, 
 		return v, nil, nil
 	}
 	if policy.NeedsAdmissionGuarantee(ab) {
-		g, err := policy.CheckAdmissionGuarantee(ctx, p.r.Reader, p.r.Config.Policy.AdmissionGuard, ab)
+		g, err := policy.CheckAdmissionGuarantee(ctx, p.r.Reader, p.r.Config.Policy, ab, p.now())
 		if err != nil {
 			return nil, nil, err
 		}

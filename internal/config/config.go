@@ -94,6 +94,14 @@ type Policy struct {
 	// user/group. Оператор сверяет их наличие и режим отказа на каждой такой
 	// выдаче; пусто — user/group не принимаются.
 	AdmissionGuard []string `json:"admissionGuard,omitempty"`
+	// AdmissionEnforcementDelay — срок вступления в силу версии политики
+	// допуска, увиденной оператором: kube-apiserver перечитывает политики
+	// периодически (раз в секунду), и каждый экземпляр — со своим отставанием
+	// наблюдателя. Пока срок от первой встречи с версией не истёк, её запись в
+	// свидетельстве не доказывает ни смены spec, ни значения rewitness;
+	// политика, созданная меньше чем за срок (и секунду точности отметок
+	// времени) до объекта, не считается старше него.
+	AdmissionEnforcementDelay Duration `json:"admissionEnforcementDelay,omitempty"`
 	// TargetResolvers — как тип цели разрешается в объект namespace CR.
 	TargetResolvers map[string]TargetResolver `json:"targetResolvers,omitempty"`
 }

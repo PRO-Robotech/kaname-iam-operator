@@ -242,6 +242,22 @@ spec:
                   AdmissionWitness — политики допуска, увиденные оператором, по записи
                   на политику: ими гарантия допуска судится на последнюю смену spec.
                 properties:
+                  confirmedCreatedBy:
+                    description: |-
+                      ConfirmedCreatedBy — значение аннотации created-by при том
+                      подтверждении: другое значение подтверждением не покрыто.
+                    type: string
+                  confirmedGeneration:
+                    description: |-
+                      ConfirmedGeneration — поколение spec, для которого проход оператора
+                      подтвердил гарантию: каждая политика стояла, отказывала и доказывала
+                      это поколение. Правка политик на месте (смена values чарта растит их
+                      metadata.generation) выдачу этого поколения не отзывает: spec записан
+                      при прежней, уже действовавшей версии. Снимается переустановкой
+                      политики (новый uid: пока её не было, status мог писать кто угодно),
+                      её снятием и отказом. 0 — подтверждения нет.
+                    format: int64
+                    type: integer
                   policies:
                     description: |-
                       Policies — увиденные политики и их привязки, по записи на политику.
@@ -269,6 +285,16 @@ spec:
                           type: integer
                         name:
                           description: Name — имя политики и привязки.
+                          type: string
+                        pendingSince:
+                          description: |-
+                            PendingSince — когда оператор впервые увидел эту версию политики и
+                            привязки, если срок вступления в силу (policy.admissionEnforcementDelay)
+                            от того момента ещё не истёк при записи. kube-apiserver перечитывает
+                            политики периодически: увиденная оператором версия ещё могла не
+                            исполняться, и такая запись не доказывает ни одного поколения spec.
+                            Снимается первым проходом после срока; Generation он ставит текущим.
+                          format: date-time
                           type: string
                         policyGeneration:
                           description: PolicyGeneration — metadata.generation политики,
