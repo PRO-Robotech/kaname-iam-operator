@@ -11,6 +11,7 @@ import (
 	"time"
 
 	iamv1 "github.com/PRO-Robotech/kaname/pkg/api/kaname/cloud/iam/v1"
+	"google.golang.org/grpc/codes"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -334,6 +335,46 @@ func TestABTargetChangeCreatesNewBindingBeforeRevokingTheOld(t *testing.T) {
 	}
 	if !strings.Contains(calls[:revokeAt], "POST /iam/v1/accessBindings\n") {
 		t.Fatal("old binding revoked before the new one was created")
+	}
+}
+
+// Вторая смена цели, пока прежняя выдача ещё не отозвана (отзыв отказывает),
+// не теряет её: каждая заменённая выдача отзывается, действует ровно одна.
+func TestABSecondTargetChangeDoesNotForgetTheReplacedBinding(t *testing.T) {
+	tn := newTenant(t, true)
+	reserve(t, tn, "tga")
+	reserve(t, tn, "tgb")
+	reserve(t, tn, "tgc")
+	readySA(t, tn, "zot-twice")
+	ab := newAB(tn, "twice", "zot-twice", "registry.pusher", "tga")
+	createAB(t, ab)
+	first := waitABReady(t, ab).Status.ID
+	fakeK.FailOperation("POST", "^/iam/v1/accessBindings/"+first+":revoke$", codes.Unavailable, 2)
+	patchObj(t, ab, func(o client.Object) { o.(*iamv1alpha1.AccessBinding).Spec.Target.Resources[0].ID = "tgb" })
+	eventually(t, waitReady, func() error {
+		cur := getAB(t, ab)
+		if cur.Status.ID == "" || cur.Status.ID == first || cur.Status.Replaced == nil {
+			return fmt.Errorf("status = %+v", cur.Status)
+		}
+		return nil
+	})
+	patchObj(t, ab, func(o client.Object) { o.(*iamv1alpha1.AccessBinding).Spec.Target.Resources[0].ID = "tgc" })
+	eventually(t, waitReady, func() error {
+		cur := getAB(t, ab)
+		if cur.Status.Replaced != nil || cur.Status.ObservedGeneration != cur.Generation {
+			return fmt.Errorf("status = %+v", cur.Status)
+		}
+		if err := wantCondition(cur.Status.Conditions, iamv1alpha1.ConditionReady, metav1.ConditionTrue, ""); err != nil {
+			return err
+		}
+		active := activeBindingsOf(string(cur.UID))
+		if len(active) != 1 || active[0].GetTarget().GetResources().GetResources()[0].GetId() != "tgc" {
+			return fmt.Errorf("active bindings = %v", active)
+		}
+		return nil
+	})
+	if remoteAB(first).GetStatus() != iamv1.AccessBinding_REVOKED {
+		t.Fatal("the first binding was forgotten and stays active")
 	}
 }
 
