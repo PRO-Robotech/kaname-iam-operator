@@ -301,6 +301,32 @@ func TestABWitnessIsKeptBeforeTheBindingNeedsTheGuarantee(t *testing.T) {
 	consistently(t, time.Second, func() error { return stillGranted(twin, whole) })
 }
 
+// Свидетельство пишется с первого прохода и выдаче, которую отказывает
+// политика оператора (роль вне policy.allowedRoles): её spec может стать
+// допустимым позже, и правку политики допуска на месте до этого оператор
+// обязан отличить, а не встретить политику впервые при переходе. Близнец —
+// допустимая выдача той же учётки: свидетельство у неё есть.
+func TestABWitnessIsKeptForABindingThePolicyRefuses(t *testing.T) {
+	installAdmissionGuard(t)
+	tn := newTenant(t, true)
+	reserve(t, tn, "abc123")
+	readySA(t, tn, "zot-refused")
+	refusedAB := newAB(tn, "witness-refused", "zot-refused", "registry.admin", "abc123")
+	twin := newAB(tn, "witness-refused-twin", "zot-refused", "registry.pusher", "abc123")
+	createAB(t, refusedAB)
+	createAB(t, twin)
+	refusedForbidden(t, refusedAB)
+	waitABReady(t, twin)
+	for _, ab := range []*iamv1alpha1.AccessBinding{twin, refusedAB} {
+		eventually(t, waitReady, func() error {
+			if w := getAB(t, ab).Status.AdmissionWitness; w == nil || len(w.Policies) != len(testCfg.Policy.AdmissionGuard) {
+				return fmt.Errorf("%s: admission witness %+v, want a record per policy of %v", ab.Name, w, testCfg.Policy.AdmissionGuard)
+			}
+			return nil
+		})
+	}
+}
+
 // deletionPolicy: Orphan судит выдачу, а тип цели может перестать
 // разрешаться (снят CRD объекта цели): судить её нечем, и Orphan её не
 // оставляет — удаление CR отзывает выдачу по её id и завершается, а не

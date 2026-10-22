@@ -5,6 +5,7 @@ package policy
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -604,6 +605,142 @@ func TestAdmissionGuaranteeConfirmedSpecSurvivesAnInPlaceChange(t *testing.T) {
 		g, err = checkAt(objs, guardNames, byPlatform(1, g.Witness), at.Add(2*time.Second+delay))
 		refused(t, g, err, "installed or changed after")
 	})
+}
+
+// stored — свидетельство w после записи в status и чтения обратно (круг
+// через JSON): k8s хранит время с точностью до секунды.
+func stored(t *testing.T, w *iamv1alpha1.AdmissionWitness) *iamv1alpha1.AdmissionWitness {
+	t.Helper()
+	if w == nil {
+		return nil
+	}
+	raw, err := json.Marshal(w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := &iamv1alpha1.AdmissionWitness{}
+	if err := json.Unmarshal(raw, out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// written — объект uid поколения gen, созданный в created, с аннотациями
+// created-by by и rewitness nonce (пустое — нет) и status, каким его читает
+// оператор: свидетельство w — ровно то, что в status записано, кем бы то ни
+// было.
+func written(t *testing.T, uid types.UID, created time.Time, gen int64, by, nonce string, w *iamv1alpha1.AdmissionWitness) *iamv1alpha1.AccessBinding {
+	t.Helper()
+	ab := &iamv1alpha1.AccessBinding{ObjectMeta: metav1.ObjectMeta{UID: uid, CreationTimestamp: metav1.NewTime(created), Generation: gen,
+		Annotations: map[string]string{}}}
+	if by != "" {
+		ab.Annotations[iamv1alpha1.AnnotationCreatedBy] = by
+	}
+	if nonce != "" {
+		ab.Annotations[iamv1alpha1.AnnotationRewitness] = nonce
+	}
+	ab.Status.AdmissionWitness = stored(t, w)
+	return ab
+}
+
+// Свидетельство лежит в status, а status держит политика status из того же
+// перечня admissionGuard. Политики переустановлены вместе (в installed), и у
+// новой версии политики status есть своё окно до вступления в силу: status в
+// нём пишет любой, кому RBAC даёт accessbindings/status. Записанное так не
+// оператором гарантии не даёт — ни в окне, ни после него (SD-K3-9, P5):
+// доверие свидетельству не выводится из того, что может записать писатель
+// status. Законные близнецы — те же поля, записанные самим оператором после
+// вступления политик в силу; запись оператора о другом объекте гарантии не
+// даёт.
+func TestAdmissionGuaranteeTrustsOnlyTheWitnessTheOperatorWrote(t *testing.T) {
+	const platform = "system:serviceaccount:platform-system:onboarding"
+	const gen = 3
+	const uid = types.UID("ab-1")
+	three := []string{"kio-writers", "kio-bindings", "kio-status"}
+	created := t0
+	installed := created.Add(time.Hour)
+	objs := guard(installed, three...)
+	// Поля, которые оператор пишет выдаче платформы, когда та засвидетельствовала
+	// политики (rewitness) после их вступления в силу.
+	fields := &iamv1alpha1.AdmissionWitness{RewitnessNonce: "n1", ConfirmedGeneration: gen, ConfirmedCreatedBy: platform}
+	for _, n := range three {
+		fields.Policies = append(fields.Policies, entry(n, 0))
+	}
+	// confirmed — цепочка проходов оператора по объекту id: первая встреча с
+	// переустановленными политиками, закрепление записей после срока,
+	// rewitness платформы.
+	confirmed := func(t *testing.T, id types.UID) *iamv1alpha1.AdmissionWitness {
+		t.Helper()
+		g, err := checkAt(objs, three, written(t, id, created, gen, platform, "", nil), installed.Add(100*time.Millisecond))
+		refused(t, g, err, "was installed after")
+		g, err = checkAt(objs, three, written(t, id, created, gen, platform, "", g.Witness), installed.Add(delay+2*time.Second))
+		refused(t, g, err, "installed or changed after")
+		g, err = checkAt(objs, three, written(t, id, created, gen, platform, "n1", g.Witness), installed.Add(delay+3*time.Second))
+		holds(t, g, err, "platform rewitness after the policies took effect")
+		if !equalWitness(g.Witness, fields) {
+			t.Fatalf("witness = %+v, want %+v", g.Witness, fields)
+		}
+		return g.Witness
+	}
+
+	t.Run("SD-K3-9 the fields written by another writer of status", func(t *testing.T) {
+		for _, at := range []time.Duration{500 * time.Millisecond, delay + 5*time.Second} {
+			g, err := checkAt(objs, three, written(t, uid, created, gen, platform, "n1", fields), installed.Add(at))
+			refused(t, g, err, "carries no valid seal")
+		}
+	})
+	t.Run("twin SD-K3-9: the same fields written by the operator", func(t *testing.T) {
+		w := confirmed(t, uid)
+		g, err := checkAt(objs, three, written(t, uid, created, gen, platform, "n1", w), installed.Add(delay+5*time.Second))
+		holds(t, g, err, "the operator's own witness read back")
+	})
+	t.Run("P5 pendingSince stripped from the operator's records while the status policy is younger than the delay", func(t *testing.T) {
+		first, err := checkAt(objs, three, written(t, uid, created, gen, platform, "", nil), installed.Add(100*time.Millisecond))
+		refused(t, first, err, "was installed after")
+		forged := stored(t, first.Witness)
+		for i := range forged.Policies {
+			forged.Policies[i].PendingSince, forged.Policies[i].Generation = nil, 0
+		}
+		g, err := checkAt(objs, three, written(t, uid, created, gen, platform, "", forged), installed.Add(500*time.Millisecond))
+		refused(t, g, err, "carries no valid seal")
+	})
+	t.Run("twin P5: the operator's records read back after the delay from its first sight", func(t *testing.T) {
+		g, err := checkAt(objs, three, written(t, uid, created, gen, platform, "", nil), installed.Add(100*time.Millisecond))
+		refused(t, g, err, "was installed after")
+		g, err = checkAt(objs, three, written(t, uid, created, gen, platform, "", g.Witness), installed.Add(delay+2*time.Second))
+		refused(t, g, err, "installed or changed after")
+		g, err = checkAt(objs, three, written(t, uid, created, gen+1, platform, "", g.Witness), installed.Add(delay+3*time.Second))
+		holds(t, g, err, "spec change after the policies took effect")
+	})
+	t.Run("the operator's witness of another object", func(t *testing.T) {
+		w := confirmed(t, "ab-other")
+		g, err := checkAt(objs, three, written(t, uid, created, gen, platform, "n1", w), installed.Add(delay+5*time.Second))
+		refused(t, g, err, "carries no valid seal")
+	})
+}
+
+// Отметка первой встречи с версией политики (pendingSince) хранится в status
+// с точностью до секунды: срок вступления в силу отсчитывается не раньше
+// настоящей встречи. Версия увидена в installed+0,9 с, запись прочитана
+// обратно; смена spec в installed+срок+0,7 с — раньше срока от настоящей
+// встречи — не доказана. Близнец — та же цепочка после срока от неё.
+func TestAdmissionGuaranteeCountsTheDelayFromTheActualSight(t *testing.T) {
+	created := t0
+	installed := created.Add(time.Hour)
+	objs := guard(installed)
+	first, err := checkAt(objs, guardNames, written(t, "", created, 5, "", "", nil), installed.Add(900*time.Millisecond))
+	refused(t, first, err, "was installed after")
+	chain := func(settle, change time.Duration) (Guarantee, error) {
+		g, err := checkAt(objs, guardNames, written(t, "", created, 5, "", "", first.Witness), installed.Add(settle))
+		if err != nil {
+			return g, err
+		}
+		return checkAt(objs, guardNames, written(t, "", created, 6, "", "", g.Witness), installed.Add(change))
+	}
+	g, err := chain(delay+500*time.Millisecond, delay+700*time.Millisecond)
+	refused(t, g, err, "admissionEnforcementDelay")
+	g, err = chain(delay+time.Second, delay+1200*time.Millisecond)
+	holds(t, g, err, "spec change after the delay from the actual sight")
 }
 
 func find(w *iamv1alpha1.AdmissionWitness, name string) *iamv1alpha1.AdmissionPolicyUIDs {
