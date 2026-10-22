@@ -198,4 +198,16 @@ func TestResolveTargets(t *testing.T) {
 	if err != nil || v == nil || v.Reason != iamv1alpha1.ReasonForbidden {
 		t.Errorf("unknown type: v=%v err=%v", v, err)
 	}
+	// Чужая цель запрещает выдачу и тогда, когда до неё в перечне стоит цель,
+	// ещё не готовая: запрет отзывает выдачу, ожидание — нет, и «ещё не
+	// готово» не вправе заслонить «чужое». Близнец — те же цели без чужой:
+	// ожидание.
+	v, err = ResolveTargets(ctx, c, mapper, testPolicy(), "cust01", append(refs("pending1"), refs("foreign1")...))
+	if err != nil || v == nil || v.Reason != iamv1alpha1.ReasonForbidden || !strings.Contains(v.Message, "foreign1") {
+		t.Errorf("a pending target before a foreign one: v=%v err=%v, want Forbidden naming foreign1", v, err)
+	}
+	v, err = ResolveTargets(ctx, c, mapper, testPolicy(), "cust01", append(refs("pending1"), refs("abc123")...))
+	if err != nil || v == nil || v.Reason != iamv1alpha1.ReasonTargetUnresolved {
+		t.Errorf("a pending target before an own one: v=%v err=%v, want TargetUnresolved", v, err)
+	}
 }

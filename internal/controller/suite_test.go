@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -51,6 +52,9 @@ var (
 	testCfg  *config.Config
 	restCfg  *rest.Config
 	testRole = map[string]string{}
+	// recorded — события оператора пакета: пробы судят по ним то, что
+	// оператор сообщает наружу.
+	recorded = &eventLog{}
 
 	scheme       = runtime.NewScheme()
 	kanameCli    *kaname.Client
@@ -186,7 +190,7 @@ func startOperator(cfg *config.Config) (stop func(), err error) {
 		return nil, fmt.Errorf("manager: %w", err)
 	}
 	deps := &Deps{
-		Kaname: kanameCli, Vault: vaultCli, Config: cfg, Recorder: &events.FakeRecorder{},
+		Kaname: kanameCli, Vault: vaultCli, Config: cfg, Recorder: recorded,
 		Clock: clk, DriftInterval: 500 * time.Millisecond,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -242,6 +246,43 @@ func zapLevel() zapcore.Level {
 		return zapcore.DebugLevel
 	}
 	return zapcore.ErrorLevel
+}
+
+// eventLog — EventRecorder пробы: хранит события с объектом, типом и
+// причиной.
+type eventLog struct {
+	mu    sync.Mutex
+	items []recordedEvent
+}
+
+type recordedEvent struct {
+	object, eventtype, reason, note string
+}
+
+var _ events.EventRecorder = (*eventLog)(nil)
+
+func (l *eventLog) Eventf(regarding, _ runtime.Object, eventtype, reason, _, note string, args ...any) {
+	name := ""
+	if o, ok := regarding.(client.Object); ok {
+		name = o.GetNamespace() + "/" + o.GetName()
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.items = append(l.items, recordedEvent{object: name, eventtype: eventtype, reason: reason, note: fmt.Sprintf(note, args...)})
+}
+
+// of — события объекта obj с причиной reason.
+func (l *eventLog) of(obj client.Object, reason string) []recordedEvent {
+	name := obj.GetNamespace() + "/" + obj.GetName()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []recordedEvent
+	for _, e := range l.items {
+		if e.object == name && e.reason == reason {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 type assertionFunc func() string

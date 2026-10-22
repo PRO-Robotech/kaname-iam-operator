@@ -341,6 +341,27 @@ func TestResyncAnnotationOnlyFromThePlatform(t *testing.T) {
 	admitted(t, set(as(t, platform), "n1"))
 }
 
+// Аннотацию rewitness — просьбу засвидетельствовать политики допуска для
+// текущего spec — ставит только платформа: по ней оператор восстанавливает
+// выдачи пользователям и на всю область без смены spec. Близнец — то же
+// значение от принципала платформы.
+func TestRewitnessAnnotationOnlyFromThePlatform(t *testing.T) {
+	ctx := context.Background()
+	obj := ab("registry.pusher")
+	admitted(t, as(t, registryOperator).Create(ctx, obj))
+	set := func(c client.Client, v string) error {
+		cur := &iamv1alpha1.AccessBinding{}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(obj), cur); err != nil {
+			t.Fatal(err)
+		}
+		cur.Annotations = map[string]string{iamv1alpha1.AnnotationRewitness: v}
+		return c.Update(ctx, cur)
+	}
+	denied(t, set(as(t, registryOperator), "n1"), "rewitness is set only by a platform principal")
+	admitted(t, set(as(t, platform), "n1"))
+	denied(t, set(as(t, registryOperator), "n2"), "rewitness is set only by a platform principal")
+}
+
 func TestCreatedByAnnotationIsAuthentic(t *testing.T) {
 	ctx := context.Background()
 	spoof := sa()
