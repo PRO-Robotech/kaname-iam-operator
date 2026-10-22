@@ -438,7 +438,7 @@ func TestKeyProtocolDoesNotOverwriteAForeignRecord(t *testing.T) {
 	h.settle(t)
 	data, ver := h.v.Get(vaultMount, h.path())
 	if !sameRecord(data, foreignRecord()) || ver != before {
-		t.Fatalf("foreign record rewritten: version %d→%d, data %v", before, ver, data)
+		t.Fatalf("foreign record rewritten: version %d→%d, keyId %q, owner %q", before, ver, data[vaultKeyID], data[vaultOwnerUID])
 	}
 	if h.issueCalls() != 0 {
 		t.Fatalf("issued %d keys for a path held by a foreign record", h.issueCalls())
@@ -461,7 +461,7 @@ func TestKeyProtocolDeletionLeavesAForeignRecord(t *testing.T) {
 		t.Fatalf("CR still present: %v", err)
 	}
 	if data, _ := h.v.Get(vaultMount, h.path()); !sameRecord(data, foreignRecord()) {
-		t.Fatalf("foreign record removed or rewritten by the deletion: %v", data)
+		t.Fatalf("foreign record removed or rewritten by the deletion: present %v, keyId %q", data != nil, data[vaultKeyID])
 	}
 }
 
@@ -477,7 +477,7 @@ func TestKeyProtocolDeletionRemovesItsOwnRecord(t *testing.T) {
 	}
 	h.settle(t)
 	if data, _ := h.v.Get(vaultMount, h.path()); data != nil {
-		t.Fatalf("own record survived the deletion: %v", data)
+		t.Fatalf("own record survived the deletion: keyId %q", data[vaultKeyID])
 	}
 }
 

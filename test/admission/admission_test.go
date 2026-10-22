@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -33,6 +34,8 @@ import (
 	"sigs.k8s.io/yaml"
 
 	iamv1alpha1 "github.com/PRO-Robotech/kaname-iam-operator/api/v1alpha1"
+	"github.com/PRO-Robotech/kaname-iam-operator/internal/config"
+	"github.com/PRO-Robotech/kaname-iam-operator/internal/policy"
 )
 
 const (
@@ -447,5 +450,62 @@ func TestChartRefusesAnIncompleteConfig(t *testing.T) {
 	_, err = helmTemplate("--set", "config.policy.allowedRoles=null")
 	if err == nil || !strings.Contains(err.Error(), "allowedRoles must name at least one role") {
 		t.Fatalf("render without allowed roles: %v", err)
+	}
+}
+
+// renderedConfig — config.yaml оператора из ConfigMap рендера, разобранный
+// тем же Parse, что и на старте процесса.
+func renderedConfig(t *testing.T, objs []*unstructured.Unstructured) *config.Config {
+	t.Helper()
+	for _, o := range objs {
+		if o.GetKind() != "ConfigMap" || !strings.HasSuffix(o.GetName(), "-config") {
+			continue
+		}
+		raw, _, err := unstructured.NestedString(o.Object, "data", "config.yaml")
+		if err != nil || raw == "" {
+			t.Fatalf("config.yaml absent in %s: %v", o.GetName(), err)
+		}
+		c, err := config.Parse([]byte(raw))
+		if err != nil {
+			t.Fatalf("rendered config refused by the operator: %v", err)
+		}
+		return c
+	}
+	t.Fatal("no operator ConfigMap rendered")
+	return nil
+}
+
+// Гарантия допуска, которую оператор сверяет для субъектов user/group, держится
+// ровно политиками этого чарта: названные в config имена — его политики,
+// поставленные в настоящий kube-apiserver, и проверка оператора их принимает.
+// Без допуска перечень пуст — оператор user/group не примет.
+func TestChartAdmissionGuardIsSatisfiedByItsOwnPolicies(t *testing.T) {
+	c := renderedConfig(t, rendered)
+	if len(c.Policy.AdmissionGuard) != 2 {
+		t.Fatalf("admissionGuard = %v, want the writers and bindings policies", c.Policy.AdmissionGuard)
+	}
+	for _, n := range c.Policy.AdmissionGuard {
+		if find("ValidatingAdmissionPolicy", n) == nil || find("ValidatingAdmissionPolicyBinding", n) == nil {
+			t.Fatalf("admissionGuard names %s, which the chart does not render with its binding", n)
+		}
+	}
+	admin, err := client.New(restCfg, client.Options{Scheme: scheme})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := policy.CheckAdmissionGuarantee(context.Background(), admin, c.Policy.AdmissionGuard, time.Now().Add(time.Minute))
+	if err != nil || v != nil {
+		t.Fatalf("the operator refuses the chart's own admission policies: %v %v", v, err)
+	}
+	out, err := helmTemplate("--set", "admission.enabled=false")
+	if err != nil {
+		t.Fatal(err)
+	}
+	objs, err := decodeAll(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if off := renderedConfig(t, objs); len(off.Policy.AdmissionGuard) != 0 {
+		t.Fatalf("admission disabled, yet admissionGuard = %v", off.Policy.AdmissionGuard)
 	}
 }
