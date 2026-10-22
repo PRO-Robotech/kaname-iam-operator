@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -546,8 +547,10 @@ func renderedConfig(t *testing.T, objs []*unstructured.Unstructured) *config.Con
 // Без допуска перечень пуст — оператор user/group не примет.
 func TestChartAdmissionGuardIsSatisfiedByItsOwnPolicies(t *testing.T) {
 	c := renderedConfig(t, rendered)
-	if len(c.Policy.AdmissionGuard) != 2 {
-		t.Fatalf("admissionGuard = %v, want the writers and bindings policies", c.Policy.AdmissionGuard)
+	// Политика status — в гарантии: свидетельство политик в status подлинно,
+	// только пока status пишет один оператор.
+	if len(c.Policy.AdmissionGuard) != 3 || !slices.ContainsFunc(c.Policy.AdmissionGuard, func(n string) bool { return strings.HasSuffix(n, "-status") }) {
+		t.Fatalf("admissionGuard = %v, want the writers, bindings and status policies", c.Policy.AdmissionGuard)
 	}
 	for _, n := range c.Policy.AdmissionGuard {
 		if find("ValidatingAdmissionPolicy", n) == nil || find("ValidatingAdmissionPolicyBinding", n) == nil {
