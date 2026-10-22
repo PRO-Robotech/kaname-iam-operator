@@ -390,9 +390,62 @@ func TestRBACIsNarrow(t *testing.T) {
 	}
 }
 
+// Права оператора объявлены дважды: маркерами kubebuilder (config/rbac,
+// controller-gen) и чартом. Чарт обязан покрывать каждое правило маркеров:
+// иначе установленный оператор получает отказ там, где код его ждёт.
+func TestChartRBACCoversTheGeneratedRole(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(repoRoot, "config", "rbac", "role.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gen rbacv1.ClusterRole
+	if err := yaml.Unmarshal(raw, &gen); err != nil {
+		t.Fatal(err)
+	}
+	if len(gen.Rules) == 0 {
+		t.Fatal("generated role has no rules: the census read nothing")
+	}
+	u := find("ClusterRole", "-manager")
+	if u == nil {
+		t.Fatal("no manager ClusterRole rendered")
+	}
+	var chart rbacv1.ClusterRole
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &chart); err != nil {
+		t.Fatal(err)
+	}
+	granted := map[string]bool{}
+	for _, r := range chart.Rules {
+		for _, g := range r.APIGroups {
+			for _, res := range r.Resources {
+				for _, v := range r.Verbs {
+					granted[g+"/"+res+"/"+v] = true
+				}
+			}
+		}
+	}
+	n := 0
+	for _, r := range gen.Rules {
+		for _, g := range r.APIGroups {
+			for _, res := range r.Resources {
+				for _, v := range r.Verbs {
+					n++
+					if !granted[g+"/"+res+"/"+v] {
+						t.Errorf("chart does not grant %s %s/%s required by the controller markers", v, g, res)
+					}
+				}
+			}
+		}
+	}
+	t.Logf("generated permissions checked: %d", n)
+}
+
 func TestChartRefusesAnIncompleteConfig(t *testing.T) {
 	_, err := helmTemplate("--set", "config.clusterName=")
 	if err == nil || !strings.Contains(err.Error(), "config.clusterName is required") {
 		t.Fatalf("render without clusterName: %v", err)
+	}
+	_, err = helmTemplate("--set", "config.policy.allowedRoles=null")
+	if err == nil || !strings.Contains(err.Error(), "allowedRoles must name at least one role") {
+		t.Fatalf("render without allowed roles: %v", err)
 	}
 }

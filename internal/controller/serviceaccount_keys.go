@@ -195,7 +195,9 @@ func (p *saPass) reconcileKey(ctx context.Context, spec iamv1alpha1.KeySpec, liv
 	if ks.Issuing != nil {
 		nonce := ks.Issuing.Nonce
 		if rec != nil && rec.Data[vaultNonce] == nonce {
-			if k, ok := live[rec.Data[vaultKeyID]]; ok && p.owned(k.GetLabels()) {
+			// Ключ записи обязан нести тот же nonce: запись, указывающая на иной
+			// свой ключ, выпуском этого намерения не является.
+			if k, ok := live[rec.Data[vaultKeyID]]; ok && p.owned(k.GetLabels()) && k.GetLabels()[iamv1alpha1.LabelKeyNonce] == nonce {
 				p.finalizeKey(spec, ks, rec.Data[vaultKeyID], k.GetExpiresAt().AsTime(), rec.Version)
 				return p.saved3(ctx)
 			}

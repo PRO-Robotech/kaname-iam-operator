@@ -57,6 +57,11 @@ test: manifests generate fmt vet setup-envtest ## Run unit and envtest suites.
 		go test ./... -count=1 -coverprofile cover.out -json > test-report.json || { $(MAKE) --no-print-directory test-summary; exit 1; }
 	@$(MAKE) --no-print-directory test-summary
 
+.PHONY: test-inject
+test-inject: setup-envtest ## Prove probes can fail: each injection drops one product fact, its probe must go red.
+	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" \
+		python3 hack/inject/inject.py .
+
 .PHONY: test-summary
 test-summary: ## Print counts of executed tests from test-report.json.
 	@go run ./hack/testsummary test-report.json

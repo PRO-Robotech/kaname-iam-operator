@@ -39,6 +39,9 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{/* config.yaml оператора: обязательные поля — required, отказ рендера. */}}
 {{- define "kio.config" -}}
 {{- $c := .Values.config -}}
+{{- if not $c.policy.allowedRoles -}}
+{{- fail "config.policy.allowedRoles must name at least one role" -}}
+{{- end -}}
 {{- $kaname := dict "apiURL" (required "config.kaname.apiURL is required" $c.kaname.apiURL) "audience" (required "config.kaname.audience is required" $c.kaname.audience) "callTimeout" $c.kaname.callTimeout "assertionTTL" $c.kaname.assertionTTL "qps" $c.kaname.qps "burst" $c.kaname.burst -}}
 {{- if $c.kaname.tokenURL }}{{- $_ := set $kaname "tokenURL" $c.kaname.tokenURL -}}{{- end -}}
 {{- if $c.kaname.requestedAudience }}{{- $_ := set $kaname "requestedAudience" $c.kaname.requestedAudience -}}{{- end -}}
