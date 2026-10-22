@@ -1,0 +1,155 @@
+name: Integration
+
+# Проба оператора против НАСТОЯЩЕГО kaname и настоящего Vault.
+#
+# kaname поднимается его собственным стендом чартом (`.github/scripts/stand-chart.sh`
+# репозитория kaname) в kind на закреплённой ревизии — той, против которой
+# собран клиент (go.mod: github.com/PRO-Robotech/kaname v0.5.0 = 93ad1b88).
+# Vault — контейнер testcontainers, k8s оператора — envtest. Стенду до пробы
+# создаются два условия: доставлен манифест модуля registry
+# (hack/it-deliver-registry.sh — роль registry.pusher и личность модуля) и
+# заведён человек полосы входа (stand-chart.sh seed-login-lane — человек со
+# своим аккаунтом). Сама проба — hack/it-stand.sh: адресов и учётных данных в
+# дереве нет, всё приходит из окружения шага и снимается ловушкой.
+#
+# Исходы различаются кодом: 75 у стенда и у it-stand.sh — «условие не
+# создано» (кластер, образ, база, переадресация): вердикта о дереве нет, и
+# шаг называет это аннотацией, а не дефектом кода.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  KANAME_REF: 93ad1b885469c79f284b9fc629f86fe3dde81a97
+
+jobs:
+  integration:
+    name: real kaname (kind, chart) + Vault container
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      KANAME_STAND_ALERT_RULES: "off"
+      KANAME_STAND_CLUSTER: kio-it-kaname
+      KANAME_STAND_IMAGE: kaname:kio-it
+      KIO_STAND_CONTEXT: kind-kio-it-kaname
+      KIO_STAND_NAMESPACE: kaname
+      KIO_STAND_RELEASE: kaname
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v4
+
+      - name: Clone kaname at the pinned revision
+        uses: actions/checkout@v4
+        with:
+          repository: PRO-Robotech/kaname
+          ref: ${{ env.KANAME_REF }}
+          path: .kaname-src
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.18.4
+
+      - name: Stand coordinates (outside the work tree)
+        run: |
+          echo "KANAME_STAND_WORKDIR=$RUNNER_TEMP/kaname-stand" >> "$GITHUB_ENV"
+          echo "KUBECONFIG=$RUNNER_TEMP/kaname-stand.kubeconfig" >> "$GITHUB_ENV"
+
+      - name: Tools (their absence is NOT a finding about the tree)
+        run: |
+          rc=0
+          go install sigs.k8s.io/kind@v0.33.0 || rc=$?
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          python3 -c 'import yaml' 2>/dev/null || pip3 install --user pyyaml || rc=$?
+          missing=""
+          for tool in kind helm kubectl docker openssl python3; do
+            command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
+          done
+          if [ -n "$missing" ] || [ "$rc" -ne 0 ]; then
+            echo "::error title=CONDITION NOT CREATED::missing tools:$missing (install rc=$rc) — no verdict about the tree"
+            exit 1
+          fi
+
+      - name: kaname stand up (chart in kind)
+        timeout-minutes: 30
+        working-directory: .kaname-src
+        run: |
+          rc=0
+          .github/scripts/stand-chart.sh up || rc=$?
+          case "$rc" in
+            0) echo "kaname stand is up at $KANAME_REF" ;;
+            75) echo "::error title=CONDITION NOT CREATED::the kaname stand did not come up (cluster, image, database) — no verdict about the tree"; exit 1 ;;
+            *) echo "::error title=STAND FAILED::stand-chart.sh up exited $rc"; exit "$rc" ;;
+          esac
+
+      - name: Registry module delivered to the stand
+        timeout-minutes: 10
+        env:
+          KIO_STAND_KUBECONFIG: ${{ env.KUBECONFIG }}
+          KANAME_SRC: ${{ github.workspace }}/.kaname-src
+        run: |
+          rc=0
+          hack/it-deliver-registry.sh || rc=$?
+          case "$rc" in
+            0) ;;
+            75) echo "::error title=CONDITION NOT CREATED::the registry manifest was not delivered to the stand — no verdict about the tree"; exit 1 ;;
+            *) exit "$rc" ;;
+          esac
+
+      - name: Human of the login lane (own account)
+        timeout-minutes: 10
+        working-directory: .kaname-src
+        run: |
+          rc=0
+          .github/scripts/stand-chart.sh seed-login-lane || rc=$?
+          case "$rc" in
+            0) ;;
+            75) echo "::error title=CONDITION NOT CREATED::the login-lane human was not seeded — no verdict about the tree"; exit 1 ;;
+            *) echo "::error title=STAND FAILED::stand-chart.sh seed-login-lane exited $rc"; exit "$rc" ;;
+          esac
+
+      - name: Integration probe against the stand
+        timeout-minutes: 25
+        env:
+          KIO_STAND_KUBECONFIG: ${{ env.KUBECONFIG }}
+          KIO_STAND_BOOTSTRAP_TLS_SECRET: kaname-client-tls
+          KIO_STAND_CA_DIR: ${{ env.KANAME_STAND_WORKDIR }}/pki
+          KIO_STAND_ROLE: iam.group.view
+          KIO_STAND_TARGET_TYPE: iam.group
+        run: |
+          rc=0
+          make test-integration > "$RUNNER_TEMP/integration.log" 2>&1 || rc=$?
+          cat "$RUNNER_TEMP/integration.log"
+          echo "integration rc=$rc"
+          grep -E '^(=== RUN|--- (PASS|FAIL|SKIP)|PASS|FAIL|ok )|residue census|NOT EXECUTED|УСЛОВИЕ НЕ СОЗДАНО' "$RUNNER_TEMP/integration.log" | tail -60 || true
+          case "$rc" in
+            0) ;;
+            75) echo "::error title=CONDITION NOT CREATED::it-stand.sh could not create its condition — no verdict about the tree"; exit 1 ;;
+            *) exit "$rc" ;;
+          esac
+
+      - name: kaname diagnostics on failure
+        if: failure()
+        run: |
+          kubectl --context kind-kio-it-kaname -n kaname get pods -o wide || true
+          kubectl --context kind-kio-it-kaname -n kaname logs -l app.kubernetes.io/name=kaname --tail=200 --all-containers || true
+
+      - name: kaname stand down
+        if: always()
+        working-directory: .kaname-src
+        run: .github/scripts/stand-chart.sh down || true

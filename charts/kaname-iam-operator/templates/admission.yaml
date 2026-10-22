@@ -1,0 +1,167 @@
+{{- if .Values.admission.enabled }}
+{{- $operator := include "kio.operatorUser" . }}
+{{- $writers := .Values.admission.writers | default list }}
+{{- $groups := .Values.admission.writerGroups | default list }}
+{{- $deleters := .Values.admission.deleters | default list }}
+{{- $statusWriters := append (.Values.admission.statusWriters | default list) $operator }}
+{{- $platform := .Values.config.policy.platformPrincipals | default list }}
+{{- $roles := .Values.config.policy.allowedRoles | default list }}
+{{- $classRoles := .Values.config.policy.systemClassRoles | default list }}
+# Писатели CR: перечень настраиваемый (registry-operator, онбординг, Argo CD).
+# Оператор сам меняет только финализаторы; удалять CR, кроме писателей, вправе
+# контроллер namespace и сборщик мусора. Аннотацию resync-drift, субъектов
+# user/group и цель allInScope ставит только платформа.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ include "kio.fullname" . }}-writers
+  labels:
+    {{- include "kio.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["iam.kaname.in-cloud.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["serviceaccounts", "accessbindings"]
+  variables:
+    - name: user
+      expression: >-
+        request.userInfo.username
+    - name: writer
+      expression: >-
+        request.userInfo.username in {{ toJson $writers }} ||
+        (has(request.userInfo.groups) && request.userInfo.groups.exists(g, g in {{ toJson $groups }}))
+    - name: isOperator
+      expression: >-
+        request.userInfo.username == {{ toJson $operator }}
+    - name: platform
+      expression: >-
+        request.userInfo.username in {{ toJson $platform }}
+    - name: annotations
+      expression: >-
+        request.operation == 'DELETE' ? {} : (has(object.metadata.annotations) ? object.metadata.annotations : {})
+    - name: oldAnnotations
+      expression: >-
+        request.operation == 'CREATE' ? {} : (has(oldObject.metadata.annotations) ? oldObject.metadata.annotations : {})
+  validations:
+    - expression: >-
+        variables.writer ||
+        (request.operation == 'DELETE' && variables.user in {{ toJson $deleters }}) ||
+        (variables.isOperator && request.operation == 'UPDATE' && object.spec == oldObject.spec &&
+         variables.annotations == variables.oldAnnotations &&
+         (has(object.metadata.labels) ? object.metadata.labels : {}) == (has(oldObject.metadata.labels) ? oldObject.metadata.labels : {}))
+      messageExpression: "'user ' + variables.user + ' may not ' + request.operation + ' kaname IAM objects: only the configured writers may, and the operator may only change finalizers'"
+      reason: Forbidden
+    - expression: >-
+        request.operation == 'DELETE' ||
+        (variables.annotations[?'iam.kaname.in-cloud.io/resync-drift'].orValue('') == variables.oldAnnotations[?'iam.kaname.in-cloud.io/resync-drift'].orValue('')) ||
+        variables.platform
+      message: "annotation iam.kaname.in-cloud.io/resync-drift is set only by a platform principal"
+      reason: Forbidden
+    - expression: >-
+        request.operation != 'CREATE' ||
+        !('iam.kaname.in-cloud.io/created-by' in variables.annotations) ||
+        variables.annotations['iam.kaname.in-cloud.io/created-by'] == variables.user
+      message: "annotation iam.kaname.in-cloud.io/created-by must name the creating user"
+      reason: Forbidden
+    - expression: >-
+        request.operation != 'UPDATE' ||
+        variables.annotations[?'iam.kaname.in-cloud.io/created-by'].orValue('') == variables.oldAnnotations[?'iam.kaname.in-cloud.io/created-by'].orValue('')
+      message: "annotation iam.kaname.in-cloud.io/created-by is immutable"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ include "kio.fullname" . }}-writers
+  labels:
+    {{- include "kio.labels" . | nindent 4 }}
+spec:
+  policyName: {{ include "kio.fullname" . }}-writers
+  validationActions: [Deny]
+---
+# Выдача: роль из перечня, системный класс — только с ролями системных
+# классов, пользователь, группа и цель «вся область» (allInScope) — только от
+# принципала платформы. Судится выдача, то есть spec: правка без смены spec
+# (финализаторы оператора, метки, аннотации — их судит политика писателей)
+# этими правилами не судится, иначе оператор не взял бы под финализатор и не
+# отпустил бы выдачу, которую ставит только платформа.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ include "kio.fullname" . }}-bindings
+  labels:
+    {{- include "kio.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["iam.kaname.in-cloud.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["accessbindings"]
+  variables:
+    - name: grant
+      expression: >-
+        request.operation == 'CREATE' || object.spec != oldObject.spec
+  validations:
+    - expression: >-
+        !variables.grant || object.spec.roleRef.name in {{ toJson $roles }}
+      messageExpression: "'role ' + object.spec.roleRef.name + ' is not in the allowed roles'"
+      reason: Forbidden
+    - expression: >-
+        !variables.grant || !object.spec.subjects.exists(s, has(s.systemClass)) || object.spec.roleRef.name in {{ toJson $classRoles }}
+      message: "a system class subject is allowed only with a system class role"
+      reason: Forbidden
+    - expression: >-
+        !variables.grant || !object.spec.subjects.exists(s, has(s.user) || has(s.group)) || request.userInfo.username in {{ toJson $platform }}
+      message: "user and group subjects are accepted only from a platform principal"
+      reason: Forbidden
+    - expression: >-
+        !variables.grant || !has(object.spec.target.allInScope) || request.userInfo.username in {{ toJson $platform }}
+      message: "an allInScope target is accepted only from a platform principal"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ include "kio.fullname" . }}-bindings
+  labels:
+    {{- include "kio.labels" . | nindent 4 }}
+spec:
+  policyName: {{ include "kio.fullname" . }}-bindings
+  validationActions: [Deny]
+---
+# /status пишет только оператор (и перечисленные явно).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ include "kio.fullname" . }}-status
+  labels:
+    {{- include "kio.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["iam.kaname.in-cloud.io"]
+        apiVersions: ["*"]
+        operations: ["UPDATE"]
+        resources: ["serviceaccounts/status", "accessbindings/status"]
+  validations:
+    - expression: >-
+        request.userInfo.username in {{ toJson $statusWriters }}
+      messageExpression: "'user ' + request.userInfo.username + ' may not write the status of kaname IAM objects'"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ include "kio.fullname" . }}-status
+  labels:
+    {{- include "kio.labels" . | nindent 4 }}
+spec:
+  policyName: {{ include "kio.fullname" . }}-status
+  validationActions: [Deny]
+{{- end }}

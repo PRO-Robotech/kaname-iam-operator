@@ -1,0 +1,13 @@
+# Бинарники и инструменты
+bin/
+Dockerfile.cross
+*.test
+cover.out
+test-report.json
+go.work
+.idea
+.vscode
+*.swp
+*~
+*.kubeconfig
+.DS_Store

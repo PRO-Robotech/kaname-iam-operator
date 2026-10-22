@@ -1,0 +1,25 @@
+# Посадка e2e: kaname и Vault намеренно недостижимы (адреса в зоне .invalid):
+# проба судит установку, права и ограждение допуска, а не обмен с ними.
+replicaCount: 2
+config:
+  clusterName: e2e
+  kaname:
+    apiURL: https://kaname.e2e.invalid:9098
+    audience: https://kaname.e2e.invalid
+  vault:
+    address: https://vault.e2e.invalid:8200
+  policy:
+    allowedRoles: [registry.puller, registry.pusher, registry.public.read]
+    systemClassRoles: [registry.public.read]
+    platformPrincipals: ["system:serviceaccount:platform-system:onboarding"]
+  delivery:
+    vault:
+      docker-registry:
+        mount: secret
+        pathTemplate: clusters/{cluster}/namespaces/{namespace}/apps/docker-registry/{instance}/robots/{name}/{key}
+admission:
+  writers:
+    - system:serviceaccount:registry-system:registry-operator
+resources:
+  requests: {cpu: 10m, memory: 32Mi}
+  limits: {memory: 128Mi}
