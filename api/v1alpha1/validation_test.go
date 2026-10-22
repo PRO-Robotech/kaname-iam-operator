@@ -110,8 +110,8 @@ func TestServiceAccountDefaultsAreApplied(t *testing.T) {
 		t.Fatalf("lawful SA refused: %v", err)
 	}
 	k := sa.Spec.Keys[0]
-	if k.Kind != iamv1alpha1.KeyKindSecret || k.TTLSeconds != 2592000 || k.Rotation.RenewBeforeSeconds != 864000 || k.Rotation.OverlapSeconds != 86400 {
-		t.Fatalf("key defaults = %+v", k)
+	if k.Kind != iamv1alpha1.KeyKindSecret || k.TTLSeconds != 2592000 || k.Rotation.RenewBeforeSeconds != nil || k.Rotation.OverlapSeconds != nil {
+		t.Fatalf("key defaults = %+v (rotation is computed by the operator, not defaulted by the schema)", k)
 	}
 	if sa.Spec.Enabled == nil || !*sa.Spec.Enabled || sa.Spec.DeletionPolicy != iamv1alpha1.DeletionPolicyDelete {
 		t.Fatalf("spec defaults: enabled %v policy %q", sa.Spec.Enabled, sa.Spec.DeletionPolicy)
@@ -128,10 +128,14 @@ func TestServiceAccountCreateRefusals(t *testing.T) {
 		{"secret with audience", func(s *iamv1alpha1.ServiceAccount) { s.Spec.Keys[0].Audience = []string{"registry"} }, "audience is not meaningful"},
 		{"renewBefore not below ttl", func(s *iamv1alpha1.ServiceAccount) {
 			s.Spec.Keys[0].TTLSeconds = 3600
-			s.Spec.Keys[0].Rotation = iamv1alpha1.KeyRotation{RenewBeforeSeconds: 3600, OverlapSeconds: 60}
+			s.Spec.Keys[0].Rotation = iamv1alpha1.KeyRotation{RenewBeforeSeconds: ptr.To[int64](3600), OverlapSeconds: ptr.To[int64](60)}
 		}, "renewBeforeSeconds must be less than ttlSeconds"},
+		{"overlap not below ttl", func(s *iamv1alpha1.ServiceAccount) {
+			s.Spec.Keys[0].TTLSeconds = 3600
+			s.Spec.Keys[0].Rotation = iamv1alpha1.KeyRotation{OverlapSeconds: ptr.To[int64](3600)}
+		}, "overlapSeconds must be less than ttlSeconds"},
 		{"overlap above renewBefore", func(s *iamv1alpha1.ServiceAccount) {
-			s.Spec.Keys[0].Rotation = iamv1alpha1.KeyRotation{RenewBeforeSeconds: 600, OverlapSeconds: 601}
+			s.Spec.Keys[0].Rotation = iamv1alpha1.KeyRotation{RenewBeforeSeconds: ptr.To[int64](600), OverlapSeconds: ptr.To[int64](601)}
 		}, "overlapSeconds must not exceed"},
 		{"reserved label prefix", func(s *iamv1alpha1.ServiceAccount) {
 			s.Spec.Labels = map[string]string{"k8s.in-cloud.io/uid": "x"}
@@ -161,9 +165,15 @@ func TestServiceAccountLawfulTwins(t *testing.T) {
 		},
 		func(s *iamv1alpha1.ServiceAccount) {
 			s.Spec.Keys[0].TTLSeconds = 3600
-			s.Spec.Keys[0].Rotation = iamv1alpha1.KeyRotation{RenewBeforeSeconds: 3599, OverlapSeconds: 3599}
+			s.Spec.Keys[0].Rotation = iamv1alpha1.KeyRotation{RenewBeforeSeconds: ptr.To[int64](3599), OverlapSeconds: ptr.To[int64](3599)}
 		},
 		func(s *iamv1alpha1.ServiceAccount) { s.Spec.Labels = map[string]string{"in-cloud.io/team": "a"} },
+		// Короткий срок без ротации в spec: окно замены вычисляет оператор.
+		func(s *iamv1alpha1.ServiceAccount) { s.Spec.Keys[0].TTLSeconds = 3600 },
+		// Явный ноль перекрытия законен: прежний ключ отзывается сразу.
+		func(s *iamv1alpha1.ServiceAccount) {
+			s.Spec.Keys[0].Rotation = iamv1alpha1.KeyRotation{OverlapSeconds: ptr.To[int64](0)}
+		},
 	}
 	for i, mutate := range twins {
 		sa := validSA()

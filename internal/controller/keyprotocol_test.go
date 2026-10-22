@@ -23,6 +23,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/events"
 	clocktesting "k8s.io/utils/clock/testing"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -107,7 +108,7 @@ delivery:
 	sa.Generation = 1
 	sa.Spec.Keys[0].Kind = iamv1alpha1.KeyKindSecret
 	sa.Spec.Keys[0].TTLSeconds = 7200
-	sa.Spec.Keys[0].Rotation = iamv1alpha1.KeyRotation{RenewBeforeSeconds: 1800, OverlapSeconds: 600}
+	sa.Spec.Keys[0].Rotation = iamv1alpha1.KeyRotation{RenewBeforeSeconds: ptr.To[int64](1800), OverlapSeconds: ptr.To[int64](600)}
 	h.key = client.ObjectKeyFromObject(sa)
 	h.c = fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns, sa).
 		WithStatusSubresource(&iamv1alpha1.ServiceAccount{}).

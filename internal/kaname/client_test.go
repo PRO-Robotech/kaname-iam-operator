@@ -344,19 +344,25 @@ func TestForeignPathSegmentIsRefusedBeforeTheCall(t *testing.T) {
 	}
 }
 
-func TestListAccessBindingsBySubjectQuery(t *testing.T) {
+// Усыновление выдачи ищет по аккаунту области: перечень по субъекту kaname
+// требует права уровня кластера и учётке оператора (editor на аккаунте,
+// admin на проекте) не отдаётся — замер на стенде kaname @93ad1b88: 403
+// AUTHZ_DENIED на :listBySubject, 200 на /accounts/{id}/accessBindings.
+func TestListAccessBindingsByAccountQuery(t *testing.T) {
 	var q string
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q = r.URL.Path + "?" + r.URL.RawQuery
 		writeJSON(w, 200, `{"accessBindings":[{"id":"acb1","roleId":"r1","scopeType":"iam.project","scopeId":"p1","labels":{"k8s.in-cloud.io/uid":"u"}}]}`)
 	}))
-	abs, err := c.ListAccessBindingsBySubject(context.Background(), "SUBJECT_TYPE_SERVICE_ACCOUNT", "sva1")
+	abs, err := c.ListAccessBindingsByAccount(context.Background(), "acc1")
 	if err != nil || len(abs) != 1 || abs[0].GetId() != "acb1" {
 		t.Fatalf("abs=%v err=%v", abs, err)
 	}
-	if !strings.HasPrefix(q, "/iam/v1/accessBindings:listBySubject?") ||
-		!strings.Contains(q, "subject_type=SUBJECT_TYPE_SERVICE_ACCOUNT") || !strings.Contains(q, "subject_id=sva1") {
+	if !strings.HasPrefix(q, "/iam/v1/accounts/acc1/accessBindings?") || strings.Contains(q, "include_revoked=true") {
 		t.Errorf("query = %s", q)
+	}
+	if _, err := c.ListAccessBindingsByAccount(context.Background(), "../x"); Classify(err) != ClassInvalid {
+		t.Errorf("foreign account id: %v", err)
 	}
 }
 
@@ -433,5 +439,32 @@ func TestDecodeFailureDoesNotEchoTheBody(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "kacho_LEAK_value") {
 		t.Errorf("error echoes the secret: %v", err)
+	}
+}
+
+// Отказ операции kaname несёт детали (google.rpc.ErrorInfo и, в будущих
+// ревизиях, типы, которых клиент не знает). Неизвестный тип детали не делает
+// операцию неразбираемой: код и текст отказа доходят до классификации.
+// Замер на стенде kaname @93ad1b88: удаление учётки с ключом — операция с
+// ошибкой FAILED_PRECONDITION и деталью ErrorInfo REFERENCE_IN_USE.
+func TestOperationErrorWithUnknownDetailsDecodes(t *testing.T) {
+	for name, detail := range map[string]string{
+		"error info": `{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"REFERENCE_IN_USE","domain":"iam.kaname.cloud","metadata":{}}`,
+		"future":     `{"@type":"type.googleapis.com/kaname.future.v9.Detail","x":1}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writeJSON(w, 200, `{"id":"op1","done":true,"metadata":{"@type":"type.googleapis.com/kaname.cloud.iam.v1.DeleteServiceAccountMetadata","serviceAccountId":"sva1"},`+
+					`"error":{"code":9,"message":"resource is still referenced by other resources","details":[`+detail+`]}}`)
+			}))
+			op, err := c.GetOperation(context.Background(), "op1")
+			if err != nil {
+				t.Fatalf("GetOperation: %v", err)
+			}
+			err = OperationResult(op, nil)
+			if CodeOf(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "still referenced") {
+				t.Fatalf("result = %v", err)
+			}
+		})
 	}
 }

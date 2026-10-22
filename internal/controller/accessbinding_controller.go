@@ -234,9 +234,10 @@ func (p *abPass) reconcile(ctx context.Context) (ctrl.Result, error) {
 	if scopeType == iamv1alpha1.ScopeAccount {
 		ann = iamv1alpha1.AnnotationAccountID
 	}
-	scopeID := ns.Annotations[ann]
-	if scopeID == "" {
-		p.notReady(iamv1alpha1.ReasonScopeUnresolved, fmt.Sprintf("namespace %s has no annotation %s", ab.Namespace, ann))
+	scopeID, accountID := ns.Annotations[ann], ns.Annotations[iamv1alpha1.AnnotationAccountID]
+	if scopeID == "" || accountID == "" {
+		p.notReady(iamv1alpha1.ReasonScopeUnresolved, fmt.Sprintf("namespace %s needs annotations %s and %s",
+			ab.Namespace, iamv1alpha1.AnnotationAccountID, ann))
 		return ctrl.Result{}, nil
 	}
 	if v := policy.Evaluate(p.r.Config.Policy, ab); v != nil {
@@ -254,7 +255,7 @@ func (p *abPass) reconcile(ctx context.Context) (ctrl.Result, error) {
 			return res, err
 		}
 	}
-	want, res, err, ok := p.resolve(ctx, ns.Annotations[iamv1alpha1.AnnotationAccountID], string(scopeType), scopeID)
+	want, res, err, ok := p.resolve(ctx, accountID, string(scopeType), scopeID)
 	if !ok {
 		return res, err
 	}
@@ -353,7 +354,7 @@ func (p *abPass) resolve(ctx context.Context, accountID, scopeType, scopeID stri
 		refs = append(refs, &iamv1.ResourceRef{Type: t.Type, Id: t.ID})
 	}
 	want := desired{
-		resolved: iamv1alpha1.ResolvedBinding{Subjects: resolved, RoleID: role.GetId(), ScopeType: scopeType, ScopeID: scopeID},
+		resolved: iamv1alpha1.ResolvedBinding{Subjects: resolved, RoleID: role.GetId(), ScopeType: scopeType, ScopeID: scopeID, AccountID: accountID},
 		subjects: subjects,
 		target:   &iamv1.AccessTarget{Target: &iamv1.AccessTarget_Resources{Resources: &iamv1.AccessTargetResources{Resources: refs}}},
 	}
@@ -405,8 +406,7 @@ func expiresOf(b *iamv1.AccessBinding) *metav1.Time {
 // Чужая выдача с тем же ключом — Conflict без вызовов.
 func (p *abPass) ensureBinding(ctx context.Context, want desired) (ctrl.Result, error) {
 	ab, st := p.ab, &p.ab.Status
-	first := want.subjects[0]
-	list, err := p.r.Kaname.ListAccessBindingsBySubject(ctx, first.GetType().String(), first.GetId())
+	list, err := p.r.Kaname.ListAccessBindingsByAccount(ctx, want.resolved.AccountID)
 	if err != nil {
 		return p.fail(err)
 	}
@@ -557,9 +557,8 @@ func (p *abPass) finalize(ctx context.Context) (ctrl.Result, error) {
 		return p.revoke(ctx, st.ID)
 	}
 	// Выдача могла завестись, но не дойти до status: ищется своя по меткам.
-	if st.Resolved != nil && len(st.Resolved.Subjects) > 0 {
-		first := st.Resolved.Subjects[0]
-		list, err := p.r.Kaname.ListAccessBindingsBySubject(ctx, first.Type, first.ID)
+	if st.Resolved != nil && st.Resolved.AccountID != "" {
+		list, err := p.r.Kaname.ListAccessBindingsByAccount(ctx, st.Resolved.AccountID)
 		if err != nil {
 			return p.fail(err)
 		}

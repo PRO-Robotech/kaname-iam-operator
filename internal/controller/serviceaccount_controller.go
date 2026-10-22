@@ -534,10 +534,9 @@ func (p *saPass) teardown(ctx context.Context, remote *iamv1.ServiceAccount) (ct
 	if err != nil && kaname.Classify(err) != kaname.ClassNotFound {
 		return p.fail(err)
 	}
+	// Учётка своя и удаляется: отзываются ВСЕ её ключи, в том числе выпущенные
+	// мимо оператора, — kaname не удаляет учётку с действующими ключами.
 	for _, k := range keys {
-		if !ownedBy(k.GetLabels(), string(p.sa.UID), p.r.Config.ClusterName) {
-			continue
-		}
 		op, err := p.r.Kaname.RevokeKey(ctx, st.ID, k.GetId())
 		if kaname.Classify(err) == kaname.ClassNotFound {
 			continue

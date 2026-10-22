@@ -74,11 +74,7 @@ func RunContract(t *testing.T, c *kaname.Client, fx Fixture) {
 	if err := Await(ctx, t, c, op, &sa); err != nil {
 		t.Fatalf("create SA result: %v", err)
 	}
-	t.Cleanup(func() {
-		if op, err := c.DeleteServiceAccount(ctx, sa.GetId()); err == nil {
-			_ = Await(ctx, t, c, op, nil)
-		}
-	})
+	t.Cleanup(func() { cleanupServiceAccount(ctx, t, c, sa.GetId()) })
 	if sa.GetId() == "" || sa.GetName() != name || !sa.GetEnabled() || sa.GetLabels()["k8s.in-cloud.io/uid"] != "u-1" {
 		t.Fatalf("created SA = %v", &sa)
 	}
@@ -198,18 +194,18 @@ func RunContract(t *testing.T, c *kaname.Client, fx Fixture) {
 	if kaname.Classify(err) != kaname.ClassAlreadyExists {
 		t.Fatalf("duplicate binding: class %s (%v)", kaname.Classify(err), err)
 	}
-	bySubject, err := c.ListAccessBindingsBySubject(ctx, iamv1.SubjectType_SUBJECT_TYPE_SERVICE_ACCOUNT.String(), sa.GetId())
+	byAccount, err := c.ListAccessBindingsByAccount(ctx, fx.AccountID)
 	if err != nil {
-		t.Fatalf("list by subject: %v", err)
+		t.Fatalf("list by account: %v", err)
 	}
 	seen := false
-	for _, b := range bySubject {
+	for _, b := range byAccount {
 		if b.GetId() == ab.GetId() {
 			seen = b.GetLabels()["k8s.in-cloud.io/uid"] == "u-2" && b.GetRoleId() == role.GetId()
 		}
 	}
 	if !seen {
-		t.Fatalf("binding %s not listed by subject with its labels and role", ab.GetId())
+		t.Fatalf("binding %s (project scope) not listed by its account with its labels and role", ab.GetId())
 	}
 	op, err = c.UpdateAccessBinding(ctx, &iamv1.UpdateAccessBindingRequest{
 		AccessBindingId: ab.GetId(), UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"labels"}},
@@ -280,5 +276,25 @@ func RunContract(t *testing.T, c *kaname.Client, fx Fixture) {
 	}
 	if _, err := c.GetServiceAccount(ctx, sa.GetId()); kaname.Classify(err) != kaname.ClassNotFound {
 		t.Fatalf("get after delete: class %s (%v)", kaname.Classify(err), err)
+	}
+}
+
+// cleanupServiceAccount снимает учётку пробы и на падении: сначала её ключи
+// (kaname не удаляет учётку с действующими ключами), затем её саму.
+func cleanupServiceAccount(ctx context.Context, t *testing.T, c *kaname.Client, id string) {
+	t.Helper()
+	keys, err := c.ListKeys(ctx, id)
+	if kaname.Classify(err) == kaname.ClassNotFound {
+		return
+	}
+	for _, k := range keys {
+		if op, err := c.RevokeKey(ctx, id, k.GetId()); err == nil {
+			_ = Await(ctx, t, c, op, nil)
+		}
+	}
+	if op, err := c.DeleteServiceAccount(ctx, id); err == nil {
+		if err := Await(ctx, t, c, op, nil); err != nil {
+			t.Errorf("cleanup: delete service account %s: %v", id, err)
+		}
 	}
 }

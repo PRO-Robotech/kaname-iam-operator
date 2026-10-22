@@ -51,7 +51,7 @@ type KanameAPI interface {
 	GetAccessBinding(ctx context.Context, id string) (*iamv1.AccessBinding, error)
 	UpdateAccessBinding(ctx context.Context, req *iamv1.UpdateAccessBindingRequest) (*operationpb.Operation, error)
 	RevokeAccessBinding(ctx context.Context, id string) (*operationpb.Operation, error)
-	ListAccessBindingsBySubject(ctx context.Context, subjectType, subjectID string) ([]*iamv1.AccessBinding, error)
+	ListAccessBindingsByAccount(ctx context.Context, accountID string) ([]*iamv1.AccessBinding, error)
 	FindRole(ctx context.Context, name, accountID string) (*iamv1.Role, error)
 }
 

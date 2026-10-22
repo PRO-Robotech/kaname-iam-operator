@@ -62,9 +62,9 @@ test-summary: ## Print counts of executed tests from test-report.json.
 	@go run ./hack/testsummary test-report.json
 
 .PHONY: test-integration
-test-integration: manifests generate setup-envtest ## Run integration suites (testcontainers Vault, kaname stand).
+test-integration: manifests generate setup-envtest ## Run integration against a kaname stand (KIO_STAND_*) and a Vault container.
 	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" \
-		go test -tags=integration ./test/integration/... -count=1 -v -timeout 30m
+		hack/it-stand.sh
 
 KIND_CLUSTER ?= kaname-iam-operator-test-e2e
 

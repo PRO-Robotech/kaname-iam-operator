@@ -1,0 +1,11 @@
+kaname-iam-operator {{ .Chart.AppVersion }} is installed in {{ .Release.Namespace }}.
+
+Before ServiceAccount and AccessBinding objects reach Ready, the platform must:
+  1. register the FEDERATED key of kaname service account for
+     {{ include "kio.operatorUser" . }} (trusted_subjects: issuer of this cluster,
+     subject_pattern ^{{ include "kio.operatorUser" . }}$, the cluster's service account signing key);
+  2. grant that kaname account editor on each tenant account and admin on each tenant project;
+  3. create Vault role {{ .Values.config.vault.role }} (kubernetes-auth {{ .Values.config.vault.authMount }})
+     bound to {{ include "kio.operatorUser" . }}, audience {{ .Values.vaultToken.audience }},
+     with create/read/update/delete on the delivery paths only;
+  4. annotate tenant namespaces with iam.kaname.in-cloud.io/account-id and iam.kaname.in-cloud.io/project-id.

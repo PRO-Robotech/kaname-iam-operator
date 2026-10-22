@@ -347,6 +347,10 @@ spec:
               resolved:
                 description: Resolved — выдача в терминах kaname.
                 properties:
+                  accountId:
+                    description: 'AccountID — аккаунт области: по нему ищется своя
+                      выдача.'
+                    type: string
                   roleId:
                     description: RoleID — id роли.
                     type: string

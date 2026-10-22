@@ -80,20 +80,20 @@ func keyTTL(s iamv1alpha1.KeySpec) int64 {
 	return s.TTLSeconds
 }
 
+// renewBefore — окно замены: заданное либо min(10 суток, срок/3).
 func renewBefore(s iamv1alpha1.KeySpec) time.Duration {
-	v := s.Rotation.RenewBeforeSeconds
-	if v == 0 {
-		v = min(defaultRenew, keyTTL(s)/3)
+	if v := s.Rotation.RenewBeforeSeconds; v != nil {
+		return time.Duration(*v) * time.Second
 	}
-	return time.Duration(v) * time.Second
+	return time.Duration(min(defaultRenew, keyTTL(s)/3)) * time.Second
 }
 
+// overlap — перекрытие: заданное (0 — сразу) либо min(1 сутки, окно замены).
 func overlap(s iamv1alpha1.KeySpec) time.Duration {
-	v := s.Rotation.OverlapSeconds
-	if v == 0 && s.Rotation.RenewBeforeSeconds == 0 {
-		v = min(defaultOverlap, int64(renewBefore(s)/time.Second))
+	if v := s.Rotation.OverlapSeconds; v != nil {
+		return time.Duration(*v) * time.Second
 	}
-	return time.Duration(v) * time.Second
+	return min(time.Duration(defaultOverlap)*time.Second, renewBefore(s))
 }
 
 func (p *saPass) keyStatus(name string) *iamv1alpha1.KeyStatus {

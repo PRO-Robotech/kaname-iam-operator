@@ -160,6 +160,9 @@ type ResolvedBinding struct {
 	// ScopeID — id области.
 	// +optional
 	ScopeID string `json:"scopeId,omitempty"`
+	// AccountID — аккаунт области: по нему ищется своя выдача.
+	// +optional
+	AccountID string `json:"accountId,omitempty"`
 }
 
 // ReplacedBinding — прежняя выдача, ждущая отзыва после заведения новой.

@@ -34,6 +34,12 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
+	// Ответ операций удаления — google.protobuf.Empty в Any: protojson разбирает
+	// Any только по типу, зарегистрированному в процессе, поэтому клиент
+	// связывает тип сам (TestClientPackageLinksEveryOperationResponseType).
+	_ "google.golang.org/protobuf/types/known/emptypb"
+	// Детали отказа операции (ErrorInfo и соседи) — тоже Any.
+	_ "google.golang.org/genproto/googleapis/rpc/errdetails"
 )
 
 // TokenSource выдаёт токен доступа kaname.
@@ -269,13 +275,15 @@ func (c *Client) RevokeAccessBinding(ctx context.Context, id string) (*operation
 	return c.operation(ctx, op, http.MethodPost, "/iam/v1/accessBindings/"+id+":revoke", &iamv1.RevokeAccessBindingRequest{AccessBindingId: id})
 }
 
-// ListAccessBindingsBySubject перечисляет выдачи субъекта (все страницы).
-func (c *Client) ListAccessBindingsBySubject(ctx context.Context, subjectType, subjectID string) ([]*iamv1.AccessBinding, error) {
-	q := url.Values{}
-	q.Set("subject_type", subjectType)
-	q.Set("subject_id", subjectID)
+// ListAccessBindingsByAccount перечисляет действующие выдачи аккаунта (все
+// страницы, все области аккаунта).
+func (c *Client) ListAccessBindingsByAccount(ctx context.Context, accountID string) ([]*iamv1.AccessBinding, error) {
+	const op = "AccessBindings.ListByAccount"
+	if !idRe.MatchString(accountID) {
+		return nil, invalidID(op, "account_id", accountID)
+	}
 	var out []*iamv1.AccessBinding
-	err := c.list(ctx, "AccessBindings.ListBySubject", "/iam/v1/accessBindings:listBySubject", q,
+	err := c.list(ctx, op, "/iam/v1/accounts/"+accountID+"/accessBindings", url.Values{},
 		func() proto.Message { return &iamv1.ListAccessBindingsResponse{} },
 		func(m proto.Message) string {
 			resp := m.(*iamv1.ListAccessBindingsResponse)
@@ -468,12 +476,47 @@ func (c *Client) once(ctx context.Context, op, method, path string, q url.Values
 		return nil
 	}
 	if err := unmarshalOpts.Unmarshal(data, out); err != nil {
+		// Детали отказа операции — Any неизвестного клиенту типа (новая
+		// ревизия kaname) — не делают операцию неразбираемой: код и текст
+		// отказа дороже деталей, и разбор повторяется без них.
+		if _, isOp := out.(*operationpb.Operation); isOp {
+			if trimmed, ok := withoutErrorDetails(data); ok && unmarshalOpts.Unmarshal(trimmed, out) == nil {
+				return nil
+			}
+		}
 		// Текст разбора не включается: тело может нести предъявительский
 		// секрет (ответ выпуска ключа), а текст ошибки уходит в журнал.
 		code = "decode"
 		return fmt.Errorf("kaname %s: response body (%d bytes) is not a %s", op, len(data), out.ProtoReflect().Descriptor().FullName())
 	}
 	return nil
+}
+
+// withoutErrorDetails снимает error.details с JSON операции.
+func withoutErrorDetails(data []byte) ([]byte, bool) {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(data, &obj) != nil {
+		return nil, false
+	}
+	raw, ok := obj["error"]
+	if !ok {
+		return nil, false
+	}
+	var st map[string]json.RawMessage
+	if json.Unmarshal(raw, &st) != nil {
+		return nil, false
+	}
+	if _, has := st["details"]; !has {
+		return nil, false
+	}
+	delete(st, "details")
+	b, err := json.Marshal(st)
+	if err != nil {
+		return nil, false
+	}
+	obj["error"] = b
+	out, err := json.Marshal(obj)
+	return out, err == nil
 }
 
 // errorFromResponse строит отказ из тела края (google.rpc.Status в JSON); тело

@@ -50,24 +50,28 @@ type KeyDelivery struct {
 }
 
 // KeyRotation — когда выпускать замену и сколько держать прежний ключ.
+// Не заданное поле вычисляет оператор от срока ключа: замена — за
+// min(10 суток, срок/3) до истечения, перекрытие — min(1 сутки, окно замены).
+// Умолчание схемой не ставится: постоянное умолчание противоречило бы
+// короткому сроку ключа.
 type KeyRotation struct {
 	// RenewBeforeSeconds — за сколько секунд до истечения выпускается замена.
-	// +kubebuilder:default=864000
 	// +kubebuilder:validation:Minimum=60
 	// +optional
-	RenewBeforeSeconds int64 `json:"renewBeforeSeconds,omitempty"`
-	// OverlapSeconds — сколько секунд прежний ключ живёт после выпуска замены.
-	// +kubebuilder:default=86400
+	RenewBeforeSeconds *int64 `json:"renewBeforeSeconds,omitempty"`
+	// OverlapSeconds — сколько секунд прежний ключ живёт после выпуска замены;
+	// 0 — прежний ключ отзывается сразу.
 	// +kubebuilder:validation:Minimum=0
 	// +optional
-	OverlapSeconds int64 `json:"overlapSeconds,omitempty"`
+	OverlapSeconds *int64 `json:"overlapSeconds,omitempty"`
 }
 
 // KeySpec — один ключ учётки.
 // +kubebuilder:validation:XValidation:rule="self.kind != 'Secret' || self.ttlSeconds <= 7776000",message="ttlSeconds of a Secret key must be <= 7776000 (90 days)"
 // +kubebuilder:validation:XValidation:rule="self.kind != 'Secret' || !has(self.audience) || size(self.audience) == 0",message="audience is not meaningful for a Secret key"
-// +kubebuilder:validation:XValidation:rule="!has(self.rotation) || self.rotation.renewBeforeSeconds < self.ttlSeconds",message="rotation.renewBeforeSeconds must be less than ttlSeconds"
-// +kubebuilder:validation:XValidation:rule="!has(self.rotation) || self.rotation.overlapSeconds <= self.rotation.renewBeforeSeconds",message="rotation.overlapSeconds must not exceed rotation.renewBeforeSeconds"
+// +kubebuilder:validation:XValidation:rule="!has(self.rotation) || !has(self.rotation.renewBeforeSeconds) || self.rotation.renewBeforeSeconds < self.ttlSeconds",message="rotation.renewBeforeSeconds must be less than ttlSeconds"
+// +kubebuilder:validation:XValidation:rule="!has(self.rotation) || !has(self.rotation.overlapSeconds) || self.rotation.overlapSeconds < self.ttlSeconds",message="rotation.overlapSeconds must be less than ttlSeconds"
+// +kubebuilder:validation:XValidation:rule="!has(self.rotation) || !has(self.rotation.overlapSeconds) || !has(self.rotation.renewBeforeSeconds) || self.rotation.overlapSeconds <= self.rotation.renewBeforeSeconds",message="rotation.overlapSeconds must not exceed rotation.renewBeforeSeconds"
 type KeySpec struct {
 	// Name — имя ключа внутри учётки.
 	// +kubebuilder:validation:Pattern=`^[a-z]([a-z0-9-]{0,30}[a-z0-9])?$`
@@ -93,7 +97,6 @@ type KeySpec struct {
 	// +optional
 	Audience []string `json:"audience,omitempty"`
 	// Rotation — ротация с перекрытием.
-	// +kubebuilder:default={}
 	// +optional
 	Rotation KeyRotation `json:"rotation,omitempty"`
 	// Delivery — доставка удостоверения. Неизменяема: другой путь — другой ключ.

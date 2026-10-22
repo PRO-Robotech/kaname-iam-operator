@@ -660,12 +660,15 @@ func (h *saService) Delete(ctx context.Context, req *iamv1.DeleteServiceAccountR
 	}
 	return s.startOp(ctx, "Delete service account", &iamv1.DeleteServiceAccountMetadata{ServiceAccountId: id, AccountId: sa.GetAccountId()},
 		func() (*anypb.Any, error) {
-			delete(s.sas, id)
-			for kid, k := range s.keys {
+			// Как у kaname: учётка с действующими ключами не удаляется (замер
+			// на стенде @93ad1b88 — FAILED_PRECONDITION, REFERENCE_IN_USE).
+			for _, k := range s.keys {
 				if k.GetSvaId() == id {
-					delete(s.keys, kid)
+					return nil, grpcstatus.Error(codes.FailedPrecondition,
+						"resource is still referenced by other resources; release those references before deleting it")
 				}
 			}
+			delete(s.sas, id)
 			return mustAny(&emptypb.Empty{}), nil
 		})
 }
@@ -981,20 +984,22 @@ func (h *bindingService) Revoke(ctx context.Context, req *iamv1.RevokeAccessBind
 		})
 }
 
-func (h *bindingService) ListBySubject(_ context.Context, req *iamv1.ListAccessBindingsBySubjectRequest) (*iamv1.ListAccessBindingsResponse, error) {
+func (h *bindingService) ListByAccount(ctx context.Context, req *iamv1.ListAccessBindingsByAccountRequest) (*iamv1.ListAccessBindingsResponse, error) {
 	s := h.s
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.denied[req.GetAccountId()] {
+		return nil, grpcstatus.Error(codes.PermissionDenied, "permission denied")
+	}
 	var all []*iamv1.AccessBinding
 	for _, b := range s.bindings {
-		if b.GetStatus() == iamv1.AccessBinding_REVOKED {
+		if b.GetStatus() == iamv1.AccessBinding_REVOKED && !req.GetIncludeRevoked() {
 			continue
 		}
-		for _, sub := range b.GetSubjects() {
-			if sub.GetType().String() == req.GetSubjectType() && sub.GetId() == req.GetSubjectId() {
-				all = append(all, proto.Clone(b).(*iamv1.AccessBinding))
-				break
-			}
+		inAccount := (b.GetScopeType() == "iam.account" && b.GetScopeId() == req.GetAccountId()) ||
+			(b.GetScopeType() == "iam.project" && s.projects[b.GetScopeId()] == req.GetAccountId())
+		if inAccount {
+			all = append(all, proto.Clone(b).(*iamv1.AccessBinding))
 		}
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i].GetId() < all[j].GetId() })

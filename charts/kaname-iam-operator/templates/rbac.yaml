@@ -1,0 +1,120 @@
+# Права оператора в кластере: свои CR, namespace (аннотации аккаунта и
+# проекта), события и чтение объектов-целей выдач по правилам конфигурации.
+# Secret кластера оператор не читает.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "kio.fullname" . }}-manager
+  labels:
+    {{- include "kio.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get, list, watch]
+  - apiGroups: [events.k8s.io]
+    resources: [events]
+    verbs: [create, patch]
+  - apiGroups: [iam.kaname.in-cloud.io]
+    resources: [serviceaccounts, accessbindings]
+    verbs: [get, list, watch, update, patch]
+  - apiGroups: [iam.kaname.in-cloud.io]
+    resources: [serviceaccounts/status, accessbindings/status]
+    verbs: [get, update, patch]
+  - apiGroups: [iam.kaname.in-cloud.io]
+    resources: [serviceaccounts/finalizers, accessbindings/finalizers]
+    verbs: [update]
+  {{- range $type, $r := .Values.config.policy.targetResolvers }}
+  - apiGroups: [{{ $r.group | quote }}]
+    resources: [{{ $r.resource | quote }}]
+    verbs: [get]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "kio.fullname" . }}-manager
+  labels:
+    {{- include "kio.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "kio.fullname" . }}-manager
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccount.name }}
+    namespace: {{ .Release.Namespace }}
+---
+# Права в своём namespace: Lease лидера и токен СОБСТВЕННОГО SA (FEDERATED-вход).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "kio.fullname" . }}-self
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kio.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [serviceaccounts/token]
+    resourceNames: [{{ .Values.serviceAccount.name | quote }}]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "kio.fullname" . }}-self
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kio.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "kio.fullname" . }}-self
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccount.name }}
+    namespace: {{ .Release.Namespace }}
+{{- if .Values.metrics.enabled }}
+---
+# Защищённый эндпоинт метрик: проверка токена и права читателя.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "kio.fullname" . }}-metrics-auth
+  labels:
+    {{- include "kio.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [authentication.k8s.io]
+    resources: [tokenreviews]
+    verbs: [create]
+  - apiGroups: [authorization.k8s.io]
+    resources: [subjectaccessreviews]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "kio.fullname" . }}-metrics-auth
+  labels:
+    {{- include "kio.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "kio.fullname" . }}-metrics-auth
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccount.name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "kio.fullname" . }}-metrics-reader
+  labels:
+    {{- include "kio.labels" . | nindent 4 }}
+rules:
+  - nonResourceURLs: [/metrics]
+    verbs: [get]
+{{- end }}

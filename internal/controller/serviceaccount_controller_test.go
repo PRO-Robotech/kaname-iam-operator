@@ -309,7 +309,7 @@ func TestSAKeyRotatesWithOverlapAndRevokesThePrevious(t *testing.T) {
 	tn := newTenant(t, true)
 	k := pushKey()
 	k.TTLSeconds = 7200
-	k.Rotation = iamv1alpha1.KeyRotation{RenewBeforeSeconds: 1800, OverlapSeconds: 600}
+	k.Rotation = iamv1alpha1.KeyRotation{RenewBeforeSeconds: ptr.To[int64](1800), OverlapSeconds: ptr.To[int64](600)}
 	sa := newSA(tn, "zot-rot", k)
 	createSA(t, sa)
 	cur := waitSAReady(t, sa)
