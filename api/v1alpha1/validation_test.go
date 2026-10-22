@@ -233,7 +233,10 @@ func TestAccessBindingCreateRefusalsAndTwins(t *testing.T) {
 			a.Spec.Subjects = []iamv1alpha1.Subject{{}}
 		}, "exactly one of"},
 		{"no subjects", func(a *iamv1alpha1.AccessBinding) { a.Spec.Subjects = nil }, "subjects"},
-		{"no target", func(a *iamv1alpha1.AccessBinding) { a.Spec.Target.Resources = nil }, "resources"},
+		{"no target", func(a *iamv1alpha1.AccessBinding) { a.Spec.Target.Resources = nil }, "exactly one of resources, allInScope"},
+		{"both target arms", func(a *iamv1alpha1.AccessBinding) {
+			a.Spec.Target.AllInScope = &iamv1alpha1.AllInScope{}
+		}, "exactly one of resources, allInScope"},
 		{"unknown system class", func(a *iamv1alpha1.AccessBinding) {
 			a.Spec.Subjects = []iamv1alpha1.Subject{{SystemClass: &iamv1alpha1.SystemClassRef{Name: "everyone"}}}
 		}, "name"},
@@ -255,6 +258,14 @@ func TestAccessBindingCreateRefusalsAndTwins(t *testing.T) {
 			a.Spec.Subjects = []iamv1alpha1.Subject{{SystemClass: &iamv1alpha1.SystemClassRef{Name: "anonymous"}}}
 		},
 		func(a *iamv1alpha1.AccessBinding) { a.Spec.Scope.Type = iamv1alpha1.ScopeAccount },
+		// Законные близнецы обеих отрицательных форм цели: ровно одна ветвь.
+		func(a *iamv1alpha1.AccessBinding) {
+			a.Spec.Target = iamv1alpha1.Target{AllInScope: &iamv1alpha1.AllInScope{}}
+		},
+		func(a *iamv1alpha1.AccessBinding) {
+			a.Spec.Scope.Type = iamv1alpha1.ScopeAccount
+			a.Spec.Target = iamv1alpha1.Target{AllInScope: &iamv1alpha1.AllInScope{}}
+		},
 	}
 	for i, mutate := range twins {
 		ab := validAB()
@@ -290,5 +301,26 @@ func TestAccessBindingImmutableFieldsAndMutableTarget(t *testing.T) {
 	// Законный близнец: цель меняется — оператор заводит новую выдачу.
 	if err := upd(func(a *iamv1alpha1.AccessBinding) { a.Spec.Target.Resources[0].ID = "def456" }); err != nil {
 		t.Fatalf("target change refused: %v", err)
+	}
+	// Цель меняет и ветвь: перечень → вся область → перечень. Смена, оставившая
+	// обе ветви, отвергается.
+	refused(t, upd(func(a *iamv1alpha1.AccessBinding) { a.Spec.Target.AllInScope = &iamv1alpha1.AllInScope{} }),
+		"exactly one of resources, allInScope")
+	if err := upd(func(a *iamv1alpha1.AccessBinding) {
+		a.Spec.Target = iamv1alpha1.Target{AllInScope: &iamv1alpha1.AllInScope{}}
+	}); err != nil {
+		t.Fatalf("target change to allInScope refused: %v", err)
+	}
+	cur := &iamv1alpha1.AccessBinding{}
+	if err := k8s.Get(ctx, client.ObjectKeyFromObject(ab), cur); err != nil {
+		t.Fatal(err)
+	}
+	if cur.Spec.Target.AllInScope == nil || len(cur.Spec.Target.Resources) != 0 {
+		t.Fatalf("stored target = %+v, want allInScope only", cur.Spec.Target)
+	}
+	if err := upd(func(a *iamv1alpha1.AccessBinding) {
+		a.Spec.Target = iamv1alpha1.Target{Resources: []iamv1alpha1.ResourceRef{{Type: "registry.registries", ID: "abc123"}}}
+	}); err != nil {
+		t.Fatalf("target change back to resources refused: %v", err)
 	}
 }

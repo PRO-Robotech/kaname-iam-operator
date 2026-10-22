@@ -106,7 +106,7 @@ func TestAdmissionGuaranteeHoldsOnlyWhenEveryFactHolds(t *testing.T) {
 	}
 }
 
-func TestNeedsAdmissionGuaranteeOnlyForUserAndGroup(t *testing.T) {
+func TestNeedsAdmissionGuaranteeOnlyForUserGroupAndAllInScope(t *testing.T) {
 	ab := &iamv1alpha1.AccessBinding{Spec: iamv1alpha1.AccessBindingSpec{Subjects: []iamv1alpha1.Subject{
 		{ServiceAccountRef: &iamv1alpha1.LocalServiceAccountRef{Name: "a"}},
 		{SystemClass: &iamv1alpha1.SystemClassRef{Name: "anonymous"}},
@@ -120,5 +120,17 @@ func TestNeedsAdmissionGuaranteeOnlyForUserAndGroup(t *testing.T) {
 		if !NeedsAdmissionGuarantee(withPrincipal) {
 			t.Fatalf("subject %+v needs the admission guarantee", s)
 		}
+	}
+	// Вся область принимается только от принципала платформы, а автора
+	// оператор знает из аннотации created-by — значит, тоже только при допуске.
+	whole := ab.DeepCopy()
+	whole.Spec.Target = iamv1alpha1.Target{AllInScope: &iamv1alpha1.AllInScope{}}
+	if !NeedsAdmissionGuarantee(whole) {
+		t.Fatal("an allInScope target needs the admission guarantee")
+	}
+	named := ab.DeepCopy()
+	named.Spec.Target = iamv1alpha1.Target{Resources: []iamv1alpha1.ResourceRef{{Type: "registry.registries", ID: "abc123"}}}
+	if NeedsAdmissionGuarantee(named) {
+		t.Fatal("a named target of service account and system class subjects needs no admission guarantee")
 	}
 }

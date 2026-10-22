@@ -188,6 +188,13 @@ spec:
                   здесь означает новую выдачу: оператор заводит выдачу с новой целью и
                   только после этого отзывает прежнюю.
                 properties:
+                  allInScope:
+                    description: |-
+                      AllInScope — вся область выдачи (аккаунт либо проект namespace), в том
+                      числе объекты, заведённые позже. Принимается только от принципала
+                      платформы и только при гарантии допуска, с ролью из перечня оператора;
+                      системному классу не выдаётся.
+                    type: object
                   resources:
                     description: |-
                       Resources — объекты-цели. Каждый обязан разрешиться в объект ЭТОГО
@@ -213,8 +220,6 @@ spec:
                     minItems: 1
                     type: array
                     x-kubernetes-list-type: atomic
-                required:
-                - resources
                 type: object
             required:
             - roleRef

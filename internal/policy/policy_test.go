@@ -76,6 +76,32 @@ func TestEvaluateRefusesEachBrokenFact(t *testing.T) {
 		{"target type without a resolver", func(ab *iamv1alpha1.AccessBinding) {
 			ab.Spec.Target.Resources[0].Type = "registry.repositories"
 		}, "registry.repositories"},
+		// Вся область — каскад на все объекты области, включая будущие: ставит
+		// только платформа. Каждый случай меняет один факт против близнеца
+		// platformAllInScope из TestEvaluateTwinsOfTheRestrictedSubjects.
+		{"allInScope without a creator", func(ab *iamv1alpha1.AccessBinding) {
+			ab.Spec.Target = iamv1alpha1.Target{AllInScope: &iamv1alpha1.AllInScope{}}
+		}, "allInScope is accepted only from a platform principal"},
+		{"allInScope from a non-platform writer", func(ab *iamv1alpha1.AccessBinding) {
+			ab.Annotations = map[string]string{iamv1alpha1.AnnotationCreatedBy: "system:serviceaccount:registry-system:registry-operator"}
+			ab.Spec.Target = iamv1alpha1.Target{AllInScope: &iamv1alpha1.AllInScope{}}
+		}, "allInScope is accepted only from a platform principal"},
+		{"allInScope to a system class", func(ab *iamv1alpha1.AccessBinding) {
+			platformAllInScope(ab)
+			ab.Spec.RoleRef.Name = "registry.public.read"
+			ab.Spec.Subjects = []iamv1alpha1.Subject{{SystemClass: &iamv1alpha1.SystemClassRef{Name: "anonymous"}}}
+		}, "a system class is never granted allInScope"},
+		{"allInScope outside a project or account scope", func(ab *iamv1alpha1.AccessBinding) {
+			platformAllInScope(ab)
+			ab.Spec.Scope.Type = "iam.cluster"
+		}, "allInScope is accepted only with scope iam.project or iam.account"},
+		{"both target arms", func(ab *iamv1alpha1.AccessBinding) {
+			platformAllInScope(ab)
+			ab.Spec.Target.Resources = []iamv1alpha1.ResourceRef{{Type: "registry.registries", ID: "abc123"}}
+		}, "exactly one of resources, allInScope"},
+		{"neither target arm", func(ab *iamv1alpha1.AccessBinding) {
+			ab.Spec.Target = iamv1alpha1.Target{}
+		}, "exactly one of resources, allInScope"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -105,6 +131,22 @@ func TestEvaluateTwinsOfTheRestrictedSubjects(t *testing.T) {
 	if v := Evaluate(testPolicy(), ab); v != nil {
 		t.Errorf("user from a platform principal refused: %v", v)
 	}
+	for _, scope := range []iamv1alpha1.ScopeType{"", iamv1alpha1.ScopeProject, iamv1alpha1.ScopeAccount} {
+		ab = lawful()
+		platformAllInScope(ab)
+		ab.Spec.Scope.Type = scope
+		if v := Evaluate(testPolicy(), ab); v != nil {
+			t.Errorf("allInScope from a platform principal on scope %q refused: %v", scope, v)
+		}
+	}
+}
+
+// platformAllInScope — законная выдача на всю область: автор — принципал
+// платформы, субъект — учётка, область — аккаунт.
+func platformAllInScope(ab *iamv1alpha1.AccessBinding) {
+	ab.Annotations = map[string]string{iamv1alpha1.AnnotationCreatedBy: "system:serviceaccount:platform-system:onboarding"}
+	ab.Spec.Scope.Type = iamv1alpha1.ScopeAccount
+	ab.Spec.Target = iamv1alpha1.Target{AllInScope: &iamv1alpha1.AllInScope{}}
 }
 
 type staticMapper map[schema.GroupVersionResource]schema.GroupVersionKind

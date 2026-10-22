@@ -9,8 +9,12 @@
 // поднимает hack/it-stand.sh); Vault — контейнер testcontainers; k8s —
 // envtest. Вход оператора в kaname — FEDERATED: утверждение TokenRequest
 // envtest обменивается на токен kaname, издатель envtest заведён в kaname
-// доверенным на время прогона. Всё заведённое прогон снимает сам, в том числе
-// на падении, и в конце сверяет перепись остатков.
+// доверенным на время прогона. Допуск — ValidatingAdmissionPolicy чарта,
+// поставленные в envtest. Модуль registry доставлен стенду манифестом
+// (hack/it-deliver-registry.sh), и прогон регистрирует его объекты листом
+// личности модуля, выписанным УЦ стенда (hack/it-stand.sh). Всё заведённое
+// прогон снимает сам, в том числе на падении, и в конце сверяет перепись
+// остатков.
 package integration_test
 
 import (
@@ -79,6 +83,7 @@ var standEnv = []string{
 	"KIO_IT_TOKEN_AUDIENCE",     // адресат REST-фронта (audience обмена)
 	"KIO_IT_ROLE",               // роль, чьи правила покрывают тип цели
 	"KIO_IT_TARGET_TYPE",        // тип цели выдачи
+	"KIO_IT_HUMAN_EMAIL",        // адрес человека, заведённого полосой входа стенда (seed-login-lane)
 }
 
 const (
@@ -168,6 +173,9 @@ func runSuite(m *testing.M) int {
 	}
 	if err := k8s.Create(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: operatorSA, Namespace: itNS}}); err != nil {
 		return notExecuted("service account: %v", err)
+	}
+	if code := installAdmission(ctx); code != 0 {
+		return code
 	}
 	signingPEM, signingAlg, err := saSigningKeyPEM(ctx)
 	if err != nil {
@@ -483,7 +491,9 @@ clusterName: %s
 kaname: {apiURL: %s, audience: %s}
 vault: {address: %s, authMount: kubernetes, role: %s, tokenPath: /var/run/secrets/vault/token}
 policy:
-  allowedRoles: [%s]
+  allowedRoles: [%s, %s]
+  platformPrincipals: [%s]
+  admissionGuard: [%s]
   targetResolvers:
     %s:
       group: registry.in-cloud.io
@@ -498,7 +508,7 @@ delivery:
       mount: %s
       pathTemplate: clusters/{cluster}/namespaces/{namespace}/apps/docker-registry/{instance}/robots/{name}/{key}
 `, cluster, env["KIO_IT_KANAME_REST_URL"], env["KIO_IT_ASSERTION_AUDIENCE"], vaultAPI.addr, vaultRole,
-		env["KIO_IT_ROLE"], env["KIO_IT_TARGET_TYPE"], vaultMount)))
+		env["KIO_IT_ROLE"], pusherRole, platformUser, strings.Join(guardNames, ", "), env["KIO_IT_TARGET_TYPE"], vaultMount)))
 	if err != nil {
 		return notExecuted("config: %v", err)
 	}

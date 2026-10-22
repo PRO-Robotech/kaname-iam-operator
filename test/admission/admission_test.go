@@ -259,6 +259,66 @@ func TestBindingRoleSubjectsAndPrincipals(t *testing.T) {
 	admitted(t, as(t, platform).Create(ctx, ab("registry.pusher", user)))
 }
 
+// Цель «вся область» ставит только принципал платформы — при создании и при
+// смене цели. Законные близнецы: та же выдача от платформы и выдача с
+// перечнем от писателя.
+func TestAllInScopeOnlyFromThePlatform(t *testing.T) {
+	ctx := context.Background()
+	whole := func() *iamv1alpha1.AccessBinding {
+		b := ab("registry.pusher")
+		b.Spec.Scope.Type = iamv1alpha1.ScopeAccount
+		b.Spec.Target = iamv1alpha1.Target{AllInScope: &iamv1alpha1.AllInScope{}}
+		return b
+	}
+	w := as(t, registryOperator)
+	denied(t, w.Create(ctx, whole()), "allInScope target is accepted only from a platform principal")
+	admitted(t, as(t, platform).Create(ctx, whole()))
+
+	named := ab("registry.pusher")
+	admitted(t, w.Create(ctx, named))
+	flip := func(c client.Client) error {
+		cur := &iamv1alpha1.AccessBinding{}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(named), cur); err != nil {
+			t.Fatal(err)
+		}
+		cur.Spec.Target = iamv1alpha1.Target{AllInScope: &iamv1alpha1.AllInScope{}}
+		return c.Update(ctx, cur)
+	}
+	denied(t, flip(w), "allInScope target is accepted only from a platform principal")
+	admitted(t, flip(as(t, platform)))
+}
+
+// Выдачи, которые ставит только платформа (субъект user, вся область), оператор
+// обязан брать под финализатор и снимать его: правка без смены spec — не
+// выдача, и ограда принципала платформы её не судит. Близнец-отрицание: та же
+// правка с изменённым spec отвергается.
+func TestOperatorFinalizesPlatformOnlyBindings(t *testing.T) {
+	ctx := context.Background()
+	user := ab("registry.pusher", iamv1alpha1.Subject{User: &iamv1alpha1.PrincipalRef{ID: "usr1"}})
+	whole := ab("registry.pusher")
+	whole.Spec.Target = iamv1alpha1.Target{AllInScope: &iamv1alpha1.AllInScope{}}
+	op := as(t, operatorUser)
+	for _, obj := range []*iamv1alpha1.AccessBinding{user, whole} {
+		admitted(t, as(t, platform).Create(ctx, obj))
+		cur := &iamv1alpha1.AccessBinding{}
+		if err := op.Get(ctx, client.ObjectKeyFromObject(obj), cur); err != nil {
+			t.Fatal(err)
+		}
+		spec := cur.DeepCopy()
+		spec.Finalizers = append(spec.Finalizers, iamv1alpha1.Finalizer)
+		spec.Spec.Labels = map[string]string{"team": "x"}
+		denied(t, op.Update(ctx, spec), "may not UPDATE")
+		fin := cur.DeepCopy()
+		fin.Finalizers = append(fin.Finalizers, iamv1alpha1.Finalizer)
+		admitted(t, op.Update(ctx, fin))
+		if err := op.Get(ctx, client.ObjectKeyFromObject(obj), cur); err != nil {
+			t.Fatal(err)
+		}
+		cur.Finalizers = nil
+		admitted(t, op.Update(ctx, cur))
+	}
+}
+
 func TestResyncAnnotationOnlyFromThePlatform(t *testing.T) {
 	ctx := context.Background()
 	obj := sa()

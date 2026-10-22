@@ -249,6 +249,69 @@ func contractBindings(ctx context.Context, t *testing.T, c *kaname.Client, fx Fi
 	if b, err := c.GetAccessBinding(ctx, ab.GetId()); err == nil && b.GetStatus() != iamv1.AccessBinding_REVOKED {
 		t.Fatalf("revoked binding status = %s", b.GetStatus())
 	}
+	contractWholeScope(ctx, t, c, fx, subj, role.GetId())
+}
+
+// contractWholeScope — выдача на всю область аккаунта: чтение отдаёт ветвь
+// allInScope (а не пустой перечень), повтор того же ключа — AlreadyExists,
+// выдача видна в списке аккаунта, отзыв её снимает.
+func contractWholeScope(ctx context.Context, t *testing.T, c *kaname.Client, fx Fixture, subj []*iamv1.Subject, roleID string) {
+	t.Helper()
+	whole := &iamv1.AccessTarget{Target: &iamv1.AccessTarget_AllInScope{AllInScope: &iamv1.AccessTargetAllInScope{}}}
+	req := func() *iamv1.CreateAccessBindingRequest {
+		return &iamv1.CreateAccessBindingRequest{
+			Subjects: subj, RoleId: roleID, ScopeType: "iam.account", ScopeId: fx.AccountID,
+			Target: whole, Labels: map[string]string{"k8s.in-cloud.io/uid": "u-3"},
+		}
+	}
+	op, err := c.CreateAccessBinding(ctx, req())
+	if err != nil {
+		t.Fatalf("create allInScope binding: %v", err)
+	}
+	var ab iamv1.AccessBinding
+	if err := Await(ctx, t, c, op, &ab); err != nil {
+		t.Fatalf("create allInScope binding result: %v", err)
+	}
+	t.Cleanup(func() {
+		if op, err := c.RevokeAccessBinding(ctx, ab.GetId()); err == nil {
+			_ = Await(ctx, t, c, op, nil)
+		}
+	})
+	got, err := c.GetAccessBinding(ctx, ab.GetId())
+	if err != nil {
+		t.Fatalf("get allInScope binding: %v", err)
+	}
+	if got.GetTarget().GetAllInScope() == nil || len(got.GetTarget().GetResources().GetResources()) != 0 ||
+		got.GetScopeType() != "iam.account" || got.GetScopeId() != fx.AccountID {
+		t.Fatalf("allInScope binding reads back as target %v scope %s:%s", got.GetTarget(), got.GetScopeType(), got.GetScopeId())
+	}
+	op, err = c.CreateAccessBinding(ctx, req())
+	if err == nil {
+		err = Await(ctx, t, c, op, nil)
+	}
+	if kaname.Classify(err) != kaname.ClassAlreadyExists {
+		t.Fatalf("duplicate allInScope binding: class %s (%v)", kaname.Classify(err), err)
+	}
+	byAccount, err := c.ListAccessBindingsByAccount(ctx, fx.AccountID)
+	if err != nil {
+		t.Fatalf("list by account: %v", err)
+	}
+	seen := false
+	for _, b := range byAccount {
+		if b.GetId() == ab.GetId() {
+			seen = b.GetTarget().GetAllInScope() != nil && b.GetLabels()["k8s.in-cloud.io/uid"] == "u-3"
+		}
+	}
+	if !seen {
+		t.Fatalf("allInScope binding %s not listed by its account with its target and labels", ab.GetId())
+	}
+	op, err = c.RevokeAccessBinding(ctx, ab.GetId())
+	if err != nil {
+		t.Fatalf("revoke allInScope binding: %v", err)
+	}
+	if err := Await(ctx, t, c, op, nil); err != nil {
+		t.Fatalf("revoke allInScope binding result: %v", err)
+	}
 }
 
 // contractEnablement — отключение, отказ выпуска у отключённой, включение.

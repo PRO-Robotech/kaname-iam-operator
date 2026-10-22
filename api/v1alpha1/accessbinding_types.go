@@ -91,14 +91,26 @@ type ResourceRef struct {
 	ID string `json:"id"`
 }
 
-// Target — цель выдачи: перечень объектов.
+// AllInScope — цель «вся область»: все объекты области выдачи, включая
+// заведённые после выдачи. Полей нет.
+type AllInScope struct{}
+
+// Target — цель выдачи: ровно одно из двух — перечень объектов либо вся
+// область.
 type Target struct {
 	// Resources — объекты-цели. Каждый обязан разрешиться в объект ЭТОГО
 	// namespace по правилам конфигурации оператора.
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=16
 	// +listType=atomic
-	Resources []ResourceRef `json:"resources"`
+	// +optional
+	Resources []ResourceRef `json:"resources,omitempty"`
+	// AllInScope — вся область выдачи (аккаунт либо проект namespace), в том
+	// числе объекты, заведённые позже. Принимается только от принципала
+	// платформы и только при гарантии допуска, с ролью из перечня оператора;
+	// системному классу не выдаётся.
+	// +optional
+	AllInScope *AllInScope `json:"allInScope,omitempty"`
 }
 
 // AccessBindingSpec — желаемая выдача kaname.
