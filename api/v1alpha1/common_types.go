@@ -16,6 +16,8 @@ const (
 	// удалить учётку с её ключами и записями Vault).
 	DeletionPolicyDelete DeletionPolicy = "Delete"
 	// DeletionPolicyOrphan — снять только финализатор, в kaname ничего не звать.
+	// Выдачу AccessBinding, которую запрещает политика оператора, Orphan не
+	// оставляет: она отзывается, как при Delete.
 	DeletionPolicyOrphan DeletionPolicy = "Orphan"
 )
 

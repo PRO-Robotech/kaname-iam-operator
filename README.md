@@ -56,16 +56,32 @@ accepts every assertion once) and exchanges it at `POST /iam/v1/token`
   check-and-set write; a record at the key path with another owner is neither
   overwritten nor deleted, and the key reports `Conflict=True` (`NotOwned`).
 * **Policy is judged on every pass.** A binding the operator policy no longer permits —
-  `policy.allowedRoles` or `policy.platformPrincipals` narrowed, the admission guarantee
-  lost — is revoked in kaname the way deletion revokes it (replaced, current, own by
-  labels, the unconfirmed-create window), whatever its `deletionPolicy`, and is not
-  granted again while the policy forbids it: the CR reports `Rejected=True`
-  (`PolicyNarrowed`). A binding that stays permissible is untouched; once permitted
-  again, it is granted anew. A configuration change restarts the operator pod (config
-  checksum), so every CR is judged by the new policy.
+  `policy.allowedRoles` or `policy.platformPrincipals` narrowed, a target object that now
+  belongs to another namespace, the admission guarantee lost — is revoked in kaname the
+  way deletion revokes it (replaced, current, own by labels, the unconfirmed-create
+  window), whatever its `deletionPolicy`, and is not granted again while the policy
+  forbids it: the CR reports `Rejected=True` (`PolicyNarrowed`). The start of each such
+  revocation is a warning event and a count in
+  `kaname_iam_operator_binding_withdrawals_total{reason}`: `PolicyNarrowed` for a
+  narrowed policy or a foreign target, `AdmissionGuaranteeLost` for a lost guarantee —
+  reinstalling or editing the admission policies revokes every user, group and
+  `allInScope` binding at once, and this reason shows it. A binding that stays
+  permissible is untouched; once permitted again, it is granted anew. A configuration
+  change restarts the operator pod (config checksum), so every CR is judged by the new
+  policy.
+* **Restoring after reinstalled admission policies.** A platform principal that has
+  checked a binding's spec sets a new value of the annotation
+  `iam.kaname.in-cloud.io/rewitness` on it; the operator then witnesses the standing
+  policies for the current spec and grants the binding again without a spec change
+  (event `Rewitnessed`). Only a value set after the operator has seen the standing
+  policies (`status.admissionWitness` names their uids) is honoured — its authenticity
+  rests on those policies; an earlier value is accounted for and ignored (event
+  `RewitnessIgnored`), and a new one is needed.
 * **Deletion.** `AccessBinding`: the binding is revoked. `ServiceAccount`: waits until
   no `AccessBinding` refers to it, disables the account, revokes every key, deletes the
-  Vault records, deletes the account. `deletionPolicy: Orphan` removes the finalizer only.
+  Vault records, deletes the account. `deletionPolicy: Orphan` removes the finalizer only —
+  except for an `AccessBinding` the operator policy forbids (already being revoked, or
+  forbidden as seen at deletion): it is revoked as with `Delete`, retried until revoked.
 * **One mutation per pass.** Every reconcile pass performs at most one mutating kaname
   call; a running operation is recorded in `status.pendingOperation` and polled.
 * **Errors.** kaname refusals are classified by a closed table: retryable
@@ -87,7 +103,7 @@ refuses to start on an incomplete or contradictory file. Notable keys:
 | `kaname.requestedAudience` | `audience` of the exchange — the REST front audience |
 | `vault.*` | Vault address, kubernetes-auth mount and role, projected token path |
 | `policy.allowedRoles`, `systemClassRoles` | operator-side check, independent of admission; a role is looked up among **system** roles only — a tenant role of the same name is never granted |
-| `policy.platformPrincipals`, `policy.admissionGuard` | who may name user and group subjects and set an `allInScope` target; the author is read from `created-by`, which only admission makes authentic, so user and group subjects and `allInScope` are accepted only while every policy in `admissionGuard` (and its binding of the same name) is installed, denies, is not narrowed and stood when the current spec was written: the policy predates the CR, or the operator saw the same policy object (uid, `status.admissionWitness`) at an earlier spec generation. A spec written while a policy was absent is refused until the next spec change under the reinstalled, already seen policy. The chart fills `admissionGuard` when `admission.enabled` with its writers, bindings and status policies — the status policy keeps `status.admissionWitness` written by the operator alone; without admission they are refused |
+| `policy.platformPrincipals`, `policy.admissionGuard` | who may name user and group subjects and set an `allInScope` target; the author is read from `created-by`, which only admission makes authentic, so user and group subjects and `allInScope` are accepted only while every policy in `admissionGuard` (and its binding of the same name) is installed, denies, is not narrowed and stood, unchanged, when the current spec was written: the policy predates the CR, or the operator saw the same policy and binding (uid and `metadata.generation`, one record per policy in `status.admissionWitness`) at an earlier spec generation. A spec written while a policy was absent, or before it was reinstalled or edited in place, is refused until the next spec change under the standing, already seen policy, or until the platform rewitnesses it (`rewitness` annotation). Adding a policy to the list or removing one leaves the records of the others intact. The chart fills `admissionGuard` when `admission.enabled` with its writers, bindings and status policies — the status policy keeps `status.admissionWitness` written by the operator alone; without admission they are refused |
 | `policy.targetResolvers` | how a target type resolves to an object of the CR namespace |
 | `delivery.vault.<app>` | KV v2 mount and path template (`{cluster}`, `{namespace}`, `{instance}`, `{name}`, `{key}`); `{cluster}`, `{namespace}`, `{name}`, `{key}` are required and every placeholder is a whole path segment, so two keys never share a path |
 
@@ -113,8 +129,8 @@ The chart installs three `ValidatingAdmissionPolicy` objects:
 
 * **writers** — only `admission.writers` (and `writerGroups`) create, change or delete
   the CRs; the namespace controller and the garbage collector may delete; the operator
-  may change finalizers only. The `resync-drift` annotation is set only by a platform
-  principal; `created-by`, when present, must name the creating user and is immutable.
+  may change finalizers only. The `resync-drift` and `rewitness` annotations are set only
+  by a platform principal; `created-by`, when present, must name the creating user and is immutable.
 * **bindings** — role from `policy.allowedRoles`; system class subjects only with
   `systemClassRoles`; user and group subjects and an `allInScope` target only from
   `platformPrincipals`. These rules judge the grant, so they apply on create and on a

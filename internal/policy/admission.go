@@ -10,7 +10,6 @@ import (
 
 	admissionv1 "k8s.io/api/admissionregistration/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	iamv1alpha1 "github.com/PRO-Robotech/kaname-iam-operator/api/v1alpha1"
@@ -22,43 +21,6 @@ import (
 func NeedsAdmissionGuarantee(ab *iamv1alpha1.AccessBinding) bool {
 	return ab.Spec.Target.AllInScope != nil ||
 		slices.ContainsFunc(ab.Spec.Subjects, func(s iamv1alpha1.Subject) bool { return s.User != nil || s.Group != nil })
-}
-
-// CheckAdmissionGuarantee подтверждает, что подлинность аннотации created-by
-// и субъектов user/group объекта ab держит допуск: каждая политика из names
-// (ValidatingAdmissionPolicy) и её привязка с тем же именем стоят в кластере,
-// отказывают (failurePolicy Fail, validationActions Deny), не сужены
-// параметрами и выборками и стояли уже тогда, когда записан текущий spec
-// объекта (его последняя смена, поколение ab.Generation).
-//
-// Без этого аннотация — слово клиента: тот, кто вправе писать AccessBinding,
-// пишет в created-by имя принципала платформы, а смену spec, пока политик
-// нет, не судит никто. Стояние политики при записи spec доказывается одним из
-// двух фактов:
-//   - политика старше самого объекта: объект k8s с тем же uid существует
-//     непрерывно, значит, стоял при любой записи этого объекта;
-//   - оператор уже видел политику с тем же uid при прежнем поколении spec
-//     (ab.Status.AdmissionWitness): та же непрерывность от момента, когда
-//     spec был ещё прежним, то есть до его смены.
-//
-// Ни одного — гарантии нет: spec, записанный, пока политики не было (снята,
-// переустановлена), отвергается и после её возвращения, до следующей смены
-// spec при уже увиденной политике. Пустой names — гарантии нет вовсе, и не
-// принимаются ни user/group, ни цель allInScope.
-//
-// Второй результат — свидетельство, которое объекту следует хранить: прежнее,
-// пока его uid совпадают с увиденными сейчас (оно доказывает и следующие
-// смены spec), иначе увиденное сейчас при текущем поколении; nil — политики
-// не на месте, и свидетельствовать нечего. Свидетельство пишется в status с
-// проверкой resourceVersion, поэтому поколение в нём — то, что было у
-// объекта, когда политики читались.
-//
-// Предел гарантии: правку политики на месте (сужение matchConstraints,
-// подмена выражения) проверка не видит; её делает только тот, кому доступна
-// запись ValidatingAdmissionPolicy, то есть администратор кластера.
-func CheckAdmissionGuarantee(ctx context.Context, c client.Reader, names []string, ab *iamv1alpha1.AccessBinding) (Guarantee, error) {
-	v, w, err := checkAdmissionGuarantee(ctx, c, names, ab)
-	return Guarantee{Violation: v, Witness: w}, err
 }
 
 // Guarantee — исход сверки гарантии допуска.
@@ -75,85 +37,202 @@ type Guarantee struct {
 	Rewitnessed bool
 }
 
-func checkAdmissionGuarantee(ctx context.Context, c client.Reader, names []string, ab *iamv1alpha1.AccessBinding) (*Violation, *iamv1alpha1.AdmissionWitness, error) {
+// CheckAdmissionGuarantee подтверждает, что подлинность аннотации created-by
+// и субъектов user/group объекта ab держит допуск: каждая политика из names
+// (ValidatingAdmissionPolicy) и её привязка с тем же именем стоят в кластере,
+// отказывают (failurePolicy Fail, validationActions Deny), не сужены
+// параметрами и выборками и стояли — той же версией — уже тогда, когда
+// записан текущий spec объекта (его последняя смена, поколение ab.Generation).
+//
+// Без этого аннотация — слово клиента: тот, кто вправе писать AccessBinding,
+// пишет в created-by имя принципала платформы, а смену spec, пока политик
+// нет (или пока они правлены в пропускающие), не судит никто. Стояние
+// политики при записи spec доказывает запись свидетельства о ней
+// (ab.Status.AdmissionWitness), по одной на политику: объект k8s с тем же uid
+// существует непрерывно, а metadata.generation растёт при каждой правке его
+// spec, поэтому политика и привязка с записанными uid и поколениями стояли
+// неизменными от записи до сейчас. Запись доказывает смены spec после
+// поколения, при котором сделана; запись поколения 0 — любые. Пишется она:
+//   - при первой встрече с политикой, старшей самого объекта, — поколения 0:
+//     стояла при любой записи объекта;
+//   - при первой встрече с политикой, моложе объекта, при переустановке
+//     (новый uid) и при правке на месте (новое поколение) — текущего
+//     поколения: текущий spec мог быть записан без неё либо при другой её
+//     версии, и гарантию даёт только следующая смена spec;
+//   - по аннотации rewitness (ставит только платформа, сверив spec) —
+//     поколения 0, но лишь когда все политики уже записаны и стоят теми же,
+//     а значение аннотации новое против учтённого при той записи: значит, оно
+//     поставлено после неё, при этих политиках, и подлинно. Значение,
+//     стоявшее раньше, чем политики увидены, учитывается без исполнения.
+//
+// Записи политик, не названных в names, не трогаются: смена состава перечня
+// не переписывает свидетельство прочих политик. Запись снятой политики
+// снимается — её uid не вернётся. Пустой names — гарантии нет вовсе, и не
+// принимаются ни user/group, ни цель allInScope.
+//
+// Свидетельство пишется в status с проверкой resourceVersion, поэтому
+// поколение в записи — то, что было у объекта, когда политики читались, а
+// значение аннотации в нём — то, что стояло до записи.
+//
+// Предел гарантии: правку политики между созданием объекта и первой встречей
+// оператора с ней старшинство политики не отличает — окно в один проход
+// реконсиляции после создания CR.
+func CheckAdmissionGuarantee(ctx context.Context, c client.Reader, names []string, ab *iamv1alpha1.AccessBinding) (Guarantee, error) {
 	if len(names) == 0 {
-		return forbidden("user and group subjects and an allInScope target need the admission guarantee of annotation %s, and the operator configuration names no admission policy (policy.admissionGuard)", iamv1alpha1.AnnotationCreatedBy), nil, nil
+		return Guarantee{Violation: lost("user and group subjects and an allInScope target need the admission guarantee of annotation %s, and the operator configuration names no admission policy (policy.admissionGuard)", iamv1alpha1.AnnotationCreatedBy)}, nil
 	}
-	created, gen, old := ab.CreationTimestamp.Time, ab.Generation, ab.Status.AdmissionWitness
-	seen := make([]iamv1alpha1.AdmissionPolicyUIDs, 0, len(names))
-	var late *Violation
+	created, gen := ab.CreationTimestamp.Time, ab.Generation
+	var old []iamv1alpha1.AdmissionPolicyUIDs
+	accounted := ""
+	if w := ab.Status.AdmissionWitness; w != nil {
+		old, accounted = w.Policies, w.RewitnessNonce
+	}
+	// bad — политика не на месте либо не отказывает: её не исправит ни
+	// свидетельство, ни аннотация; late — политика стоит, но не доказано, что
+	// стояла при последней смене spec.
+	var bad, late *Violation
+	confirmed := true
+	next := make([]iamv1alpha1.AdmissionPolicyUIDs, 0, len(old)+len(names))
+	for _, p := range old {
+		if !slices.Contains(names, p.Name) {
+			next = append(next, p)
+		}
+	}
 	for _, name := range names {
-		vap := &admissionv1.ValidatingAdmissionPolicy{}
-		if err := c.Get(ctx, client.ObjectKey{Name: name}, vap); err != nil {
-			if apierrors.IsNotFound(err) {
-				return forbidden("admission policy %s is absent: user and group subjects and an allInScope target are not accepted without it", name), nil, nil
-			}
-			return nil, nil, fmt.Errorf("admission policy %s: %w", name, err)
+		vap, bnd, v, err := readPolicy(ctx, c, name)
+		if err != nil {
+			return Guarantee{}, err
 		}
-		if fp := vap.Spec.FailurePolicy; fp != nil && *fp != admissionv1.Fail {
-			return forbidden("admission policy %s has failurePolicy %s, not Fail", name, *fp), nil, nil
+		if v != nil && bad == nil {
+			bad = v
 		}
-		bnd := &admissionv1.ValidatingAdmissionPolicyBinding{}
-		if err := c.Get(ctx, client.ObjectKey{Name: name}, bnd); err != nil {
-			if apierrors.IsNotFound(err) {
-				return forbidden("admission policy binding %s is absent: user and group subjects and an allInScope target are not accepted without it", name), nil, nil
-			}
-			return nil, nil, fmt.Errorf("admission policy binding %s: %w", name, err)
+		if vap == nil {
+			confirmed = false
+			continue
 		}
+		live := iamv1alpha1.AdmissionPolicyUIDs{Name: name, PolicyUID: vap.UID, PolicyGeneration: vap.Generation,
+			BindingUID: bnd.UID, BindingGeneration: bnd.Generation, Generation: gen}
+		prev, seen := recordOf(old, name)
+		var why *Violation
 		switch {
-		case bnd.Spec.PolicyName != name:
-			return forbidden("admission policy binding %s binds policy %q, not %q", name, bnd.Spec.PolicyName, name), nil, nil
-		case !slices.Contains(bnd.Spec.ValidationActions, admissionv1.Deny):
-			return forbidden("admission policy binding %s does not deny (validationActions %v)", name, bnd.Spec.ValidationActions), nil, nil
-		case bnd.Spec.ParamRef != nil || narrows(bnd.Spec.MatchResources):
-			return forbidden("admission policy binding %s is narrowed by parameters or match resources", name), nil, nil
-		}
-		if at := witnessed(old, gen, name); late == nil {
+		case seen && sameVersion(prev, live):
+			live.Generation = prev.Generation
+			if prev.Generation >= gen {
+				why = lost("admission policy %s was installed or changed after this object was created and the operator had not seen it before the last spec change (generation %d)", name, gen)
+			}
+		case seen:
+			confirmed = false
+			why = changedSince(prev, live, gen)
+		default:
+			confirmed = false
 			switch {
-			case vap.CreationTimestamp.After(created) && !sameUID(at.PolicyUID, vap.UID):
-				late = forbidden("admission policy %s was installed after this object was created and the operator had not seen it before the last spec change (generation %d)", name, gen)
-			case bnd.CreationTimestamp.After(created) && !sameUID(at.BindingUID, bnd.UID):
-				late = forbidden("admission policy binding %s was installed after this object was created and the operator had not seen it before the last spec change (generation %d)", name, gen)
+			case vap.CreationTimestamp.After(created):
+				why = lost("admission policy %s was installed after this object was created and the operator had not seen it before the last spec change (generation %d)", name, gen)
+			case bnd.CreationTimestamp.After(created):
+				why = lost("admission policy binding %s was installed after this object was created and the operator had not seen it before the last spec change (generation %d)", name, gen)
+			default:
+				// Старше объекта: стояла при любой его записи.
+				live.Generation = 0
 			}
 		}
-		seen = append(seen, iamv1alpha1.AdmissionPolicyUIDs{Name: name, PolicyUID: vap.UID, BindingUID: bnd.UID})
+		if why != nil && late == nil {
+			late = why
+		}
+		next = append(next, live)
 	}
-	next := old
-	if !sameWitness(old, gen, seen) {
-		next = &iamv1alpha1.AdmissionWitness{Generation: gen, Policies: seen}
+	g := Guarantee{}
+	if nonce := ab.Annotations[iamv1alpha1.AnnotationRewitness]; nonce != accounted {
+		g.Rewitness = nonce
+		if nonce != "" && confirmed && bad == nil {
+			// Все политики записаны прежде и стоят теми же, значение новое
+			// против учтённого при записи: поставлено после неё, при них.
+			g.Rewitnessed, late = true, nil
+			for i := range next {
+				if slices.Contains(names, next[i].Name) {
+					next[i].Generation = 0
+				}
+			}
+		}
+		accounted = nonce
 	}
-	return late, next, nil
+	if len(next) > 0 || accounted != "" {
+		g.Witness = &iamv1alpha1.AdmissionWitness{Policies: next, RewitnessNonce: accounted}
+	}
+	g.Violation = bad
+	if g.Violation == nil {
+		g.Violation = late
+	}
+	return g, nil
 }
 
-// witnessed — что о политике name свидетельствует w, если w увидено при
-// поколении spec раньше gen; иначе пусто.
-func witnessed(w *iamv1alpha1.AdmissionWitness, gen int64, name string) iamv1alpha1.AdmissionPolicyUIDs {
-	if w == nil || w.Generation >= gen {
-		return iamv1alpha1.AdmissionPolicyUIDs{}
+// readPolicy читает политику name и её привязку. Нет одной из них — обе nil и
+// отказ; стоят, но не отказывают или сужены — обе и отказ.
+func readPolicy(ctx context.Context, c client.Reader, name string) (*admissionv1.ValidatingAdmissionPolicy, *admissionv1.ValidatingAdmissionPolicyBinding, *Violation, error) {
+	vap := &admissionv1.ValidatingAdmissionPolicy{}
+	if err := c.Get(ctx, client.ObjectKey{Name: name}, vap); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil, lost("admission policy %s is absent: user and group subjects and an allInScope target are not accepted without it", name), nil
+		}
+		return nil, nil, nil, fmt.Errorf("admission policy %s: %w", name, err)
 	}
-	for _, p := range w.Policies {
+	bnd := &admissionv1.ValidatingAdmissionPolicyBinding{}
+	if err := c.Get(ctx, client.ObjectKey{Name: name}, bnd); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil, lost("admission policy binding %s is absent: user and group subjects and an allInScope target are not accepted without it", name), nil
+		}
+		return nil, nil, nil, fmt.Errorf("admission policy binding %s: %w", name, err)
+	}
+	var v *Violation
+	switch {
+	case vap.Spec.FailurePolicy != nil && *vap.Spec.FailurePolicy != admissionv1.Fail:
+		v = lost("admission policy %s has failurePolicy %s, not Fail", name, *vap.Spec.FailurePolicy)
+	case bnd.Spec.PolicyName != name:
+		v = lost("admission policy binding %s binds policy %q, not %q", name, bnd.Spec.PolicyName, name)
+	case !slices.Contains(bnd.Spec.ValidationActions, admissionv1.Deny):
+		v = lost("admission policy binding %s does not deny (validationActions %v)", name, bnd.Spec.ValidationActions)
+	case bnd.Spec.ParamRef != nil || narrows(bnd.Spec.MatchResources):
+		v = lost("admission policy binding %s is narrowed by parameters or match resources", name)
+	}
+	return vap, bnd, v, nil
+}
+
+// lost — отказ гарантии допуска.
+func lost(format string, a ...any) *Violation {
+	v := forbidden(format, a...)
+	v.Admission = true
+	return v
+}
+
+// recordOf — запись свидетельства о политике name.
+func recordOf(w []iamv1alpha1.AdmissionPolicyUIDs, name string) (iamv1alpha1.AdmissionPolicyUIDs, bool) {
+	for _, p := range w {
 		if p.Name == name {
-			return p
+			return p, true
 		}
 	}
-	return iamv1alpha1.AdmissionPolicyUIDs{}
+	return iamv1alpha1.AdmissionPolicyUIDs{}, false
 }
 
-// sameUID — тот ли это объект; пустой uid не свидетельствует ни о чём.
-func sameUID(recorded, live types.UID) bool { return recorded != "" && recorded == live }
+// sameVersion — та ли это политика и привязка (uid) и не правлены ли они с
+// записи (поколение). Пустой uid не свидетельствует ни о чём.
+func sameVersion(rec, live iamv1alpha1.AdmissionPolicyUIDs) bool {
+	return rec.PolicyUID != "" && rec.PolicyUID == live.PolicyUID && rec.PolicyGeneration == live.PolicyGeneration &&
+		rec.BindingUID != "" && rec.BindingUID == live.BindingUID && rec.BindingGeneration == live.BindingGeneration
+}
 
-// sameWitness — свидетельствует ли w ровно о политиках seen и увидено ли не
-// позже поколения gen: тогда оно сохраняется как есть.
-func sameWitness(w *iamv1alpha1.AdmissionWitness, gen int64, seen []iamv1alpha1.AdmissionPolicyUIDs) bool {
-	if w == nil || w.Generation > gen || len(w.Policies) != len(seen) {
-		return false
+// changedSince — чем политика, записанная rec, отличается от стоящей live.
+func changedSince(rec, live iamv1alpha1.AdmissionPolicyUIDs, gen int64) *Violation {
+	const tail = "since the operator saw it: the current spec (generation %d) may have been written without it"
+	switch {
+	case rec.PolicyUID != live.PolicyUID:
+		return lost("admission policy %s was reinstalled "+tail, rec.Name, gen)
+	case rec.BindingUID != live.BindingUID:
+		return lost("admission policy binding %s was reinstalled "+tail, rec.Name, gen)
+	case rec.PolicyGeneration != live.PolicyGeneration:
+		return lost("admission policy %s was changed in place (generation %d, seen %d) "+tail, rec.Name, live.PolicyGeneration, rec.PolicyGeneration, gen)
+	default:
+		return lost("admission policy binding %s was changed in place (generation %d, seen %d) "+tail, rec.Name, live.BindingGeneration, rec.BindingGeneration, gen)
 	}
-	for _, s := range seen {
-		if !slices.Contains(w.Policies, s) {
-			return false
-		}
-	}
-	return true
 }
 
 // narrows — сужает ли выборка привязки охват политики. Пустые селекторы,

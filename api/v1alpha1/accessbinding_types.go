@@ -146,9 +146,11 @@ type AccessBindingSpec struct {
 	// +optional
 	Labels map[string]string `json:"labels,omitempty"`
 	// DeletionPolicy — что делать с выдачей kaname при удалении CR. Orphan
-	// касается только удаления: выдачу, ставшую недопустимой политикой
-	// оператора (Rejected/PolicyNarrowed), оператор отзывает при любой
-	// политике удаления.
+	// касается только удаления и только допустимой выдачи: выдачу, ставшую
+	// недопустимой политикой оператора (Rejected/PolicyNarrowed, в том числе
+	// без гарантии допуска либо с целью из чужого namespace), оператор
+	// отзывает при любой политике удаления — и при удалении CR с Orphan,
+	// повторяя отзыв до успеха.
 	// +kubebuilder:default=Delete
 	// +optional
 	DeletionPolicy DeletionPolicy `json:"deletionPolicy,omitempty"`
@@ -191,10 +193,8 @@ type ResolvedBinding struct {
 // и она сама входит в гарантию. Запись идёт с проверкой resourceVersion:
 // поколение spec в записи — то, что было у объекта в момент чтения политик.
 type AdmissionWitness struct {
-	// Generation — поколение spec в момент, когда политики увидены.
-	// +optional
-	Generation int64 `json:"generation,omitempty"`
-	// Policies — увиденные политики и их привязки.
+	// Policies — увиденные политики и их привязки, по записи на политику.
+	// Смена состава policy.admissionGuard записи прочих политик не трогает.
 	// +listType=map
 	// +listMapKey=name
 	Policies []AdmissionPolicyUIDs `json:"policies"`
@@ -270,8 +270,8 @@ type AccessBindingStatus struct {
 	// уже выполнено.
 	// +optional
 	ResyncNonce string `json:"resyncNonce,omitempty"`
-	// AdmissionWitness — политики допуска, увиденные при прежнем поколении
-	// spec: ими гарантия допуска судится на последнюю смену spec.
+	// AdmissionWitness — политики допуска, увиденные оператором, по записи
+	// на политику: ими гарантия допуска судится на последнюю смену spec.
 	// +optional
 	AdmissionWitness *AdmissionWitness `json:"admissionWitness,omitempty"`
 	// Conditions — Ready, Synced, Conflict, SubjectPending, Drifted, Rejected.

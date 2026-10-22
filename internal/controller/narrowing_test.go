@@ -196,13 +196,23 @@ func removeAdmissionGuard(t *testing.T) {
 	}
 }
 
-// witnessed ждёт, что оператор увидел политики допуска при поколении gen.
+// witnessed ждёт, что оператор увидел политики допуска пробы впервые при
+// поколении spec gen: запись о каждой — этого поколения.
 func witnessed(t *testing.T, ab *iamv1alpha1.AccessBinding, gen int64) {
 	t.Helper()
 	eventually(t, waitReady, func() error {
 		w := getAB(t, ab).Status.AdmissionWitness
-		if w == nil || w.Generation != gen || len(w.Policies) != len(testCfg.Policy.AdmissionGuard) {
-			return fmt.Errorf("%s: admission witness %+v, want generation %d", ab.Name, w, gen)
+		if w == nil {
+			return fmt.Errorf("%s: no admission witness, want generation %d", ab.Name, gen)
+		}
+		for _, name := range testCfg.Policy.AdmissionGuard {
+			ok := false
+			for _, p := range w.Policies {
+				ok = ok || (p.Name == name && p.Generation == gen)
+			}
+			if !ok {
+				return fmt.Errorf("%s: admission witness %+v, want policy %s seen at generation %d", ab.Name, w, name, gen)
+			}
 		}
 		return nil
 	})

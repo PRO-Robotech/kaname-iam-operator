@@ -315,6 +315,9 @@ func TestAdmissionGuaranteeKeepsEachPolicyWitness(t *testing.T) {
 	if g.Violation != nil || err != nil {
 		t.Fatalf("guard shrunk: %v %v", g.Violation, err)
 	}
+	if got := find(g.Witness, "kio-status"); got == nil || *got != entry("kio-status", 0) {
+		t.Fatalf("record of kio-status, left out of the guard, = %+v, want it kept", got)
+	}
 	if g, err = check(objs, three, binding(created, 2, g.Witness)); g.Violation != nil || err != nil {
 		t.Fatalf("guard grown back: %v %v", g.Violation, err)
 	}

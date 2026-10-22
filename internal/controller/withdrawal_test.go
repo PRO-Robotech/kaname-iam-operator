@@ -170,11 +170,13 @@ func TestABAdmissionPolicyChangedInPlaceWithdrawsTheBinding(t *testing.T) {
 }
 
 // deletionPolicy: Orphan касается только удаления CR: выдача, которую
-// политика оператора запрещает, отзывается и при удалении CR. Два пути:
+// политика оператора запрещает, отзывается и при удалении CR. Три пути:
 // сужение уже увидено и отзыв идёт (kaname отвечает 503 — удаление CR
-// повторяет отзыв до успеха), и сужение впервые увидено на удалении
-// (CR удалён, пока оператор стоял). Близнец — Orphan допустимой выдачи:
-// после удаления CR выдача действует.
+// повторяет отзыв до успеха); то же для выдачи, потерявшей гарантию допуска
+// переустановкой политик (на удалении поколение объекта растёт, и запрет
+// по гарантии держит уже начатый отзыв, а не новая сверка); сужение впервые
+// увидено на удалении (CR удалён, пока оператор стоял). Близнец — Orphan
+// допустимой выдачи: после удаления CR выдача действует.
 func TestABOrphanDeletionWithdrawsAForbiddenBinding(t *testing.T) {
 	installAdmissionGuard(t)
 	withPolicy(t, func(p *config.Policy) { p.PlatformPrincipals = []string{platformPrincipal, otherPlatform} })
@@ -186,9 +188,11 @@ func TestABOrphanDeletionWithdrawsAForbiddenBinding(t *testing.T) {
 		return ab
 	}
 	retried := orphan(userAB(tn, "orphan-retried", "usr-retried"))
+	lost := orphan(userAB(tn, "orphan-lost", "usr-lost"))
+	lost.Annotations[iamv1alpha1.AnnotationCreatedBy] = otherPlatform
 	unseen := orphan(userAB(tn, "orphan-unseen", "usr-unseen"))
 	kept := orphan(newAB(tn, "orphan-kept", "zot-orphan", "registry.pusher", "abc123"))
-	all := []*iamv1alpha1.AccessBinding{retried, unseen, kept}
+	all := []*iamv1alpha1.AccessBinding{retried, lost, unseen, kept}
 	ids := map[string]string{}
 	for _, ab := range all {
 		createAB(t, ab)
@@ -201,17 +205,25 @@ func TestABOrphanDeletionWithdrawsAForbiddenBinding(t *testing.T) {
 	if err := k8s.Delete(context.Background(), unseen); err != nil {
 		t.Fatal(err)
 	}
-	revoke := "POST /iam/v1/accessBindings/" + ids[retried.Name] + ":revoke"
-	fakeK.Fail("POST", "^/iam/v1/accessBindings/"+ids[retried.Name]+":revoke$", codes.Unavailable, 2)
+	failing := []*iamv1alpha1.AccessBinding{retried, lost}
+	for _, ab := range failing {
+		fakeK.Fail("POST", "^/iam/v1/accessBindings/"+ids[ab.Name]+":revoke$", codes.Unavailable, 2)
+	}
+	removeAdmissionGuard(t)
+	installAdmissionGuard(t)
 	withPolicy(t, func(p *config.Policy) { p.PlatformPrincipals = []string{otherPlatform} })
 
-	eventually(t, waitReady, func() error {
-		return wantCondition(getAB(t, retried).Status.Conditions, iamv1alpha1.ConditionRejected, metav1.ConditionTrue, iamv1alpha1.ReasonPolicyNarrowed)
-	})
-	if got := remoteAB(ids[retried.Name]).GetStatus(); got != iamv1.AccessBinding_ACTIVE {
-		t.Fatalf("precondition: the narrowed binding is to be deleted while its revoke fails, yet it is %s", got)
+	for _, ab := range failing {
+		eventually(t, waitReady, func() error {
+			return wantCondition(getAB(t, ab).Status.Conditions, iamv1alpha1.ConditionRejected, metav1.ConditionTrue, iamv1alpha1.ReasonPolicyNarrowed)
+		})
 	}
-	for _, ab := range []*iamv1alpha1.AccessBinding{retried, kept} {
+	for _, ab := range failing {
+		if got := remoteAB(ids[ab.Name]).GetStatus(); got != iamv1.AccessBinding_ACTIVE {
+			t.Fatalf("precondition: %s is to be deleted while its revoke fails, yet its binding is %s", ab.Name, got)
+		}
+	}
+	for _, ab := range []*iamv1alpha1.AccessBinding{retried, lost, kept} {
 		if err := k8s.Delete(context.Background(), ab); err != nil {
 			t.Fatal(err)
 		}
@@ -219,13 +231,15 @@ func TestABOrphanDeletionWithdrawsAForbiddenBinding(t *testing.T) {
 	for _, ab := range all {
 		waitGone(t, ab)
 	}
-	for _, ab := range []*iamv1alpha1.AccessBinding{retried, unseen} {
+	for _, ab := range []*iamv1alpha1.AccessBinding{retried, lost, unseen} {
 		if got := remoteAB(ids[ab.Name]).GetStatus(); got != iamv1.AccessBinding_REVOKED {
 			t.Errorf("%s: Orphan deletion left the forbidden binding %s %s", ab.Name, ids[ab.Name], got)
 		}
 	}
-	if n := countCalls(revoke); n < 3 {
-		t.Errorf("revoke of %s called %d times, want the two refused calls repeated until it succeeds", ids[retried.Name], n)
+	for _, ab := range failing {
+		if n := countCalls("POST /iam/v1/accessBindings/" + ids[ab.Name] + ":revoke"); n < 3 {
+			t.Errorf("%s: revoke called %d times, want the two refused calls repeated until it succeeds", ab.Name, n)
+		}
 	}
 	if got := remoteAB(ids[kept.Name]).GetStatus(); got != iamv1.AccessBinding_ACTIVE {
 		t.Errorf("Orphan deletion of a permitted binding revoked it: %s", got)
