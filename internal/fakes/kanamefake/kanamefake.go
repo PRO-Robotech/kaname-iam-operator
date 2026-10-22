@@ -49,7 +49,9 @@ type Server struct {
 	// AsyncPolls — сколько чтений операции до её завершения (0 — сразу).
 	AsyncPolls int
 
-	mu           sync.Mutex
+	mu sync.Mutex
+	// background — задержка фонового исполнения операций (SetBackground).
+	background   time.Duration
 	now          func() time.Time
 	tokens       map[string]string
 	usedAssert   map[string]bool
@@ -74,7 +76,9 @@ type opRow struct {
 	op        *operationpb.Operation
 	owner     string
 	pollsLeft int
-	run       func() (*anypb.Any, error)
+	// background — операция исполняется фоном: чтение её не завершает.
+	background bool
+	run        func() (*anypb.Any, error)
 }
 
 type fault struct {
@@ -104,6 +108,18 @@ func New() *Server {
 		bindings:        map[string]*iamv1.AccessBinding{},
 		ops:             map[string]*opRow{},
 	}
+}
+
+// SetBackground включает фоновое исполнение операций: операция завершается
+// сама через d после ответа на изменяющий вызов, без чтения, а чтение до того
+// отдаёт её незавершённой. Так kaname исполняет мутацию воркером
+// (operations.Run): строка ресурса появляется в списках позже ответа, и
+// пустой список сразу после ответа не доказывает, что её не будет. 0 —
+// исполнение сразу либо по AsyncPolls.
+func (s *Server) SetBackground(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.background = d
 }
 
 // SetNow подменяет часы двойника.
@@ -420,8 +436,9 @@ func principalOf(ctx context.Context) string {
 	return p
 }
 
-// startOp заводит операцию. Выполнение — сразу (AsyncPolls = 0) либо на
-// AsyncPolls-м чтении. Отказ операции по FailOperation заменяет выполнение.
+// startOp заводит операцию. Выполнение — фоном (SetBackground), сразу
+// (AsyncPolls = 0) либо на AsyncPolls-м чтении. Отказ операции по
+// FailOperation заменяет выполнение.
 func (s *Server) startOp(ctx context.Context, desc string, md proto.Message, run func() (*anypb.Any, error)) (*operationpb.Operation, error) {
 	return s.startOpMode(ctx, desc, md, false, run)
 }
@@ -446,8 +463,18 @@ func (s *Server) startOpMode(ctx context.Context, desc string, md proto.Message,
 	}
 	row := &opRow{op: op, owner: principalOf(ctx), pollsLeft: s.AsyncPolls, run: run}
 	s.ops[op.Id] = row
-	if row.pollsLeft == 0 || sync {
+	switch {
+	case sync || (s.background == 0 && row.pollsLeft == 0):
 		s.finish(row)
+	case s.background > 0:
+		row.background = true
+		time.AfterFunc(s.background, func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if !row.op.GetDone() {
+				s.finish(row)
+			}
+		})
 	}
 	return proto.Clone(op).(*operationpb.Operation), nil
 }
@@ -1063,7 +1090,7 @@ func (h *opService) Get(ctx context.Context, req *operationpb.GetOperationReques
 	if row == nil || row.owner != principalOf(ctx) {
 		return nil, grpcstatus.Errorf(codes.NotFound, "operation %s not found", req.GetOperationId())
 	}
-	if !row.op.GetDone() {
+	if !row.op.GetDone() && !row.background {
 		row.pollsLeft--
 		if row.pollsLeft <= 0 {
 			s.finish(row)
