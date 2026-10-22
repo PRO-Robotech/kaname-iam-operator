@@ -252,6 +252,26 @@ func installAdmissionGuard(t *testing.T) {
 	for _, name := range testCfg.Policy.AdmissionGuard {
 		installGuardPolicy(t, name)
 	}
+	predate(t, testCfg.Policy.AdmissionGuard...)
+}
+
+// predate ждёт, пока политики names станут старше объектов, заводимых после:
+// политику, созданную меньше чем за срок вступления в силу (и секунду
+// точности отметок времени) до объекта, оператор старше него не считает.
+func predate(t *testing.T, names ...string) {
+	t.Helper()
+	var last time.Time
+	for _, name := range names {
+		for _, obj := range []client.Object{&admissionv1.ValidatingAdmissionPolicy{}, &admissionv1.ValidatingAdmissionPolicyBinding{}} {
+			if err := k8s.Get(context.Background(), client.ObjectKey{Name: name}, obj); err != nil {
+				t.Fatalf("predate %s: %v", name, err)
+			}
+			if ct := obj.GetCreationTimestamp().Time; ct.After(last) {
+				last = ct
+			}
+		}
+	}
+	time.Sleep(time.Until(last.Add(testCfg.Policy.AdmissionEnforcementDelay.Duration + time.Second + 100*time.Millisecond)))
 }
 
 // installGuardPolicy ставит одну политику допуска name с привязкой того же

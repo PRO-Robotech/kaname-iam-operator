@@ -237,9 +237,9 @@ func refusedForbidden(t *testing.T, ab *iamv1alpha1.AccessBinding) {
 }
 
 // Гарантия допуска судится на последнюю смену spec, а не на создание CR.
-// Политики поставлены ПОСЛЕ создания обоих CR (оба отвергнуты) и увидены
-// оператором при поколении 1. Положительный: spec сменён при увиденных
-// политиках — гарантия есть, выдача заведена. Её потеря (политики сняты)
+// Политики поставлены ПОСЛЕ создания обоих CR (оба отвергнуты), увидены
+// оператором при поколении 1 и вступили в силу (inForce). Положительный:
+// spec сменён при увиденных политиках — гарантия есть, выдача заведена. Её потеря (политики сняты)
 // отзывает выдачу. Отрицательный — меняет один факт: spec сменён, пока
 // политик не было, и они переустановлены после смены — гарантии нет, kaname
 // не зовётся. Близнец отрицательного: следующая смена spec при новых,
@@ -270,6 +270,7 @@ func TestABAdmissionGuaranteeIsJudgedAtTheLastSpecChange(t *testing.T) {
 	touch(t, neg)
 	witnessed(t, pos, 1)
 	witnessed(t, neg, 1)
+	inForce(t, pos, neg)
 	refusedForbidden(t, pos)
 
 	respec(t, pos, "2")
@@ -294,6 +295,7 @@ func TestABAdmissionGuaranteeIsJudgedAtTheLastSpecChange(t *testing.T) {
 		return nil
 	})
 
+	inForce(t, neg)
 	respec(t, neg, "3")
 	if id := waitABReady(t, neg).Status.ID; remoteAB(id).GetStatus() != iamv1.AccessBinding_ACTIVE {
 		t.Fatalf("binding after a spec change under the reinstalled, witnessed policies = %v", remoteAB(id))

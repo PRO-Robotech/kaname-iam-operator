@@ -123,6 +123,10 @@ policy:
   systemClassRoles: [registry.public.read]
   platformPrincipals: ["system:serviceaccount:platform-system:onboarding"]
   admissionGuard: [kio-test-writers, kio-test-bindings]
+  # Срок вступления политики в силу — наименьший допустимый: часы оператора
+  # пробы ненастоящие, и срок переводят пробы (inForce), а старшинство
+  # политики над объектом судится по отметкам kube-apiserver (predate).
+  admissionEnforcementDelay: 1s
   targetResolvers:
     registry.registries:
       group: registry.in-cloud.io

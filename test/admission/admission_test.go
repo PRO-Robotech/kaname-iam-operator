@@ -10,6 +10,7 @@ package admission_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -597,5 +598,118 @@ func TestChartAdmissionGuardIsSatisfiedByItsOwnPolicies(t *testing.T) {
 	}
 	if off := renderedConfig(t, objs); len(off.Policy.AdmissionGuard) != 0 {
 		t.Fatalf("admission disabled, yet admissionGuard = %v", off.Policy.AdmissionGuard)
+	}
+}
+
+// upgrade — helm upgrade политик допуска: spec каждой политики и привязки из
+// рендера objs ставится на стоящий объект (uid тот же; где spec сменился,
+// metadata.generation растёт). Возвращает поколения после правки по имени.
+func upgrade(t *testing.T, admin client.Client, objs []*unstructured.Unstructured) map[string]int64 {
+	t.Helper()
+	ctx := context.Background()
+	gens := map[string]int64{}
+	for _, o := range objs {
+		if !strings.HasPrefix(o.GetKind(), "ValidatingAdmissionPolicy") {
+			continue
+		}
+		cur := &unstructured.Unstructured{}
+		cur.SetGroupVersionKind(o.GroupVersionKind())
+		if err := admin.Get(ctx, client.ObjectKey{Name: o.GetName()}, cur); err != nil {
+			t.Fatalf("upgrade: get %s %s: %v", o.GetKind(), o.GetName(), err)
+		}
+		cur.Object["spec"] = o.Object["spec"]
+		if err := admin.Update(ctx, cur); err != nil {
+			t.Fatalf("upgrade: update %s %s: %v", o.GetKind(), o.GetName(), err)
+		}
+		gens[o.GetKind()+"/"+o.GetName()] = cur.GetGeneration()
+	}
+	return gens
+}
+
+// renderWith — рендер чарта с allowedRoles roles.
+func renderWith(t *testing.T, roles ...string) []*unstructured.Unstructured {
+	t.Helper()
+	b, _ := json.Marshal(roles)
+	out, err := helmTemplate("--set-json", "config.policy.allowedRoles="+string(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	objs, err := decodeAll(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return objs
+}
+
+// Смена values чарта (helm upgrade) правит политики допуска на месте: роли
+// перечня — в выражении политики выдач, и её metadata.generation растёт.
+// Выдача, допустимая и до, и после смены, чью гарантию проход подтвердил до
+// правки, остаётся допустимой — до срока вступления новой версии в силу и
+// после него: оператор её не отзывает. Близнец — upgrade, сужающий перечень
+// ролей под выдачу: выдача недопустима, и оператор её отзывает. Политики —
+// отрендеренные чартом, в настоящем kube-apiserver; сверка оператора — та
+// же, что в проходе (Evaluate, затем гарантия допуска).
+func TestChartValuesUpgradeKeepsAPermissibleBinding(t *testing.T) {
+	admin, err := client.New(restCfg, client.Options{Scheme: scheme})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { upgrade(t, admin, rendered) })
+	ctx := context.Background()
+	verdict := func(c *config.Config, ab *iamv1alpha1.AccessBinding, now time.Time) (*policy.Violation, *iamv1alpha1.AdmissionWitness) {
+		t.Helper()
+		if v := policy.Evaluate(c.Policy, ab); v != nil {
+			return v, ab.Status.AdmissionWitness
+		}
+		g, err := policy.CheckAdmissionGuarantee(ctx, admin, c.Policy, ab, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g.Violation, g.Witness
+	}
+	base := renderedConfig(t, rendered)
+	// Выдача пользователю от принципала платформы, созданная позже политик.
+	ab := &iamv1alpha1.AccessBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "upgraded", Namespace: tenantNS, Generation: 1,
+			CreationTimestamp: metav1.NewTime(time.Now().Add(time.Minute)),
+			Annotations:       map[string]string{iamv1alpha1.AnnotationCreatedBy: platform}},
+		Spec: iamv1alpha1.AccessBindingSpec{
+			Subjects: []iamv1alpha1.Subject{{User: &iamv1alpha1.PrincipalRef{ID: "usr-upgrade"}}},
+			RoleRef:  iamv1alpha1.RoleRef{Name: "registry.pusher"},
+			Target:   iamv1alpha1.Target{Resources: []iamv1alpha1.ResourceRef{{Type: "registry.registries", ID: "abc123"}}},
+		},
+	}
+	before := upgrade(t, admin, rendered)
+	now := time.Now().Add(2 * time.Minute)
+	v, w := verdict(base, ab, now)
+	if v != nil {
+		t.Fatalf("precondition: the binding is refused before the upgrade: %v", v)
+	}
+	ab.Status.AdmissionWitness = w
+
+	widened := renderWith(t, "registry.puller", "registry.pusher", "registry.public.read", "registry.extra")
+	after := upgrade(t, admin, widened)
+	bindingsPolicy := ""
+	for k := range after {
+		if strings.HasPrefix(k, "ValidatingAdmissionPolicy/") && strings.HasSuffix(k, "-bindings") {
+			bindingsPolicy = k
+		}
+	}
+	if bindingsPolicy == "" || after[bindingsPolicy] <= before[bindingsPolicy] {
+		t.Fatalf("precondition: the upgrade did not change %s in place (generation %d, was %d)", bindingsPolicy, after[bindingsPolicy], before[bindingsPolicy])
+	}
+	cfg := renderedConfig(t, widened)
+	for _, at := range []time.Duration{time.Second, cfg.Policy.AdmissionEnforcementDelay.Duration + 2*time.Second} {
+		v, w := verdict(cfg, ab, now.Add(at))
+		if v != nil {
+			t.Fatalf("%s after the widening upgrade the permissible binding is refused: %v", at, v)
+		}
+		ab.Status.AdmissionWitness = w
+	}
+
+	narrowed := renderWith(t, "registry.puller", "registry.public.read")
+	upgrade(t, admin, narrowed)
+	if v, _ := verdict(renderedConfig(t, narrowed), ab, now.Add(time.Minute)); v == nil || !strings.Contains(v.Message, "registry.pusher") {
+		t.Fatalf("twin: the upgrade narrowing allowedRoles under the binding kept it: %v", v)
 	}
 }

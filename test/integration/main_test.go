@@ -496,6 +496,7 @@ policy:
   allowedRoles: [%s, %s]
   platformPrincipals: [%s]
   admissionGuard: [%s]
+  admissionEnforcementDelay: %s
   targetResolvers:
     %s:
       group: registry.in-cloud.io
@@ -510,7 +511,7 @@ delivery:
       mount: %s
       pathTemplate: clusters/{cluster}/namespaces/{namespace}/apps/docker-registry/{instance}/robots/{name}/{key}
 `, cluster, env["KIO_IT_KANAME_REST_URL"], env["KIO_IT_ASSERTION_AUDIENCE"], vaultAPI.addr, vaultRole,
-		env["KIO_IT_ROLE"], pusherRole, platformUser, strings.Join(guardNames, ", "), env["KIO_IT_TARGET_TYPE"], vaultMount)))
+		env["KIO_IT_ROLE"], pusherRole, platformUser, strings.Join(guardNames, ", "), itEnforcementDelay, env["KIO_IT_TARGET_TYPE"], vaultMount)))
 	if err != nil {
 		return notExecuted("config: %v", err)
 	}
@@ -521,6 +522,7 @@ delivery:
 	}
 	stopOperator = stop
 	cleanups = append(cleanups, func() { stopOperator() })
+	time.Sleep(time.Until(admissionInstalled.Add(itEnforcementDelay + time.Second + 100*time.Millisecond)))
 	return 0
 }
 

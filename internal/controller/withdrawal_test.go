@@ -46,7 +46,9 @@ func afterCreation(t *testing.T, ab *iamv1alpha1.AccessBinding) {
 }
 
 // seenGuard ждёт, что оператор увидел политики допуска пробы такими, какие
-// они стоят сейчас (те же uid), при текущем поколении spec.
+// они стоят сейчас, при текущем поколении spec: запись о каждой называет uid
+// и metadata.generation и политики, и привязки — те же, что у стоящих
+// объектов (признак, по которому платформа ставит rewitness).
 func seenGuard(t *testing.T, ab *iamv1alpha1.AccessBinding) {
 	t.Helper()
 	ctx := context.Background()
@@ -56,19 +58,63 @@ func seenGuard(t *testing.T, ab *iamv1alpha1.AccessBinding) {
 			return fmt.Errorf("%s: generation %d observed %d, witness %+v", ab.Name, cur.Generation, cur.Status.ObservedGeneration, cur.Status.AdmissionWitness)
 		}
 		for _, name := range testCfg.Policy.AdmissionGuard {
-			vap := &admissionv1.ValidatingAdmissionPolicy{}
+			vap, bnd := &admissionv1.ValidatingAdmissionPolicy{}, &admissionv1.ValidatingAdmissionPolicyBinding{}
 			if err := k8s.Get(ctx, client.ObjectKey{Name: name}, vap); err != nil {
 				return err
 			}
-			found := false
-			for _, p := range cur.Status.AdmissionWitness.Policies {
-				found = found || (p.Name == name && p.PolicyUID == vap.UID)
+			if err := k8s.Get(ctx, client.ObjectKey{Name: name}, bnd); err != nil {
+				return err
 			}
-			if !found {
-				return fmt.Errorf("%s: witness %+v does not name policy %s uid %s", ab.Name, cur.Status.AdmissionWitness, name, vap.UID)
+			rec := witnessRecord(cur, name)
+			if rec == nil || rec.PolicyUID != vap.UID || rec.PolicyGeneration != vap.Generation || rec.BindingUID != bnd.UID || rec.BindingGeneration != bnd.Generation {
+				return fmt.Errorf("%s: witness record %+v does not name policy %s %s/%d and binding %s/%d",
+					ab.Name, rec, name, vap.UID, vap.Generation, bnd.UID, bnd.Generation)
 			}
 		}
 		return nil
+	})
+}
+
+// witnessRecord — запись свидетельства ab о политике name.
+func witnessRecord(ab *iamv1alpha1.AccessBinding, name string) *iamv1alpha1.AdmissionPolicyUIDs {
+	if ab.Status.AdmissionWitness == nil {
+		return nil
+	}
+	for i := range ab.Status.AdmissionWitness.Policies {
+		if p := &ab.Status.AdmissionWitness.Policies[i]; p.Name == name {
+			return p
+		}
+	}
+	return nil
+}
+
+// inForce переводит часы оператора за срок вступления в силу увиденных
+// версий политик и ждёт, что записи свидетельства каждого из abs закреплены:
+// ни одна не несёт pendingSince.
+func inForce(t *testing.T, abs ...*iamv1alpha1.AccessBinding) {
+	t.Helper()
+	clk.SetTime(clk.Now().Add(testCfg.Policy.AdmissionEnforcementDelay.Duration + time.Second))
+	for _, ab := range abs {
+		touch(t, ab)
+		eventually(t, waitReady, func() error {
+			cur := getAB(t, ab)
+			for _, name := range testCfg.Policy.AdmissionGuard {
+				if rec := witnessRecord(cur, name); rec == nil || rec.PendingSince != nil {
+					return fmt.Errorf("%s: witness record of %s = %+v, want it in force", ab.Name, name, rec)
+				}
+			}
+			return nil
+		})
+	}
+}
+
+// editGuardPolicy правит политику допуска name на месте, как helm upgrade со
+// сменой values: uid тот же, metadata.generation растёт.
+func editGuardPolicy(t *testing.T, name, message string) {
+	t.Helper()
+	vap := &admissionv1.ValidatingAdmissionPolicy{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	patchObj(t, vap, func(o client.Object) {
+		o.(*admissionv1.ValidatingAdmissionPolicy).Spec.Validations[0].Message = message
 	})
 }
 
@@ -124,6 +170,7 @@ func TestABTargetMovedToAnotherNamespaceIsWithdrawn(t *testing.T) {
 func TestABAdmissionGuardGrowingKeepsALawfulBinding(t *testing.T) {
 	const extra = "kio-test-extra"
 	installGuardPolicy(t, extra)
+	predate(t, extra)
 	tn := newTenant(t, true)
 	reserve(t, tn, "abc123")
 	ab := userAB(tn, "guard-grow", "usr-grow")
@@ -133,6 +180,7 @@ func TestABAdmissionGuardGrowingKeepsALawfulBinding(t *testing.T) {
 	installAdmissionGuard(t)
 	touch(t, ab)
 	seenGuard(t, ab)
+	inForce(t, ab)
 	respec(t, ab, "2")
 	granted := waitABReady(t, ab).Status.ID
 
@@ -142,31 +190,145 @@ func TestABAdmissionGuardGrowingKeepsALawfulBinding(t *testing.T) {
 	consistently(t, 3*time.Second, func() error { return stillGranted(ab, granted) })
 }
 
-// Правка политики допуска на месте (uid тот же, metadata.generation вырос) —
-// судится: какой версией политики записан текущий spec, неизвестно, и выдача
-// пользователю отозвана как потерявшая гарантию. Близнец — выдача учётке,
-// которой гарантия не нужна, действует.
-func TestABAdmissionPolicyChangedInPlaceWithdrawsTheBinding(t *testing.T) {
+// Правка политики допуска на месте (uid тот же, metadata.generation вырос —
+// так её правит helm upgrade со сменой values) выдачу, чью гарантию оператор
+// подтвердил до правки, не отзывает: её spec записан при прежней, уже
+// действовавшей версии. Отрицание меняет один факт: spec второй выдачи
+// сменён после правки, пока новая версия не вступила в силу, — какой версией
+// он записан, неизвестно, и выдача отозвана как потерявшая гарантию; после
+// срока вступления в силу её принимает только следующая смена spec. Близнец
+// — выдача учётке, которой гарантия не нужна, действует.
+func TestABAdmissionPolicyChangedInPlaceKeepsTheConfirmedBinding(t *testing.T) {
 	installAdmissionGuard(t)
 	tn := newTenant(t, true)
 	reserve(t, tn, "abc123")
 	readySA(t, tn, "zot-edit")
-	ab := userAB(tn, "guard-edit", "usr-edit")
+	kept := userAB(tn, "guard-edit", "usr-edit")
+	moved := userAB(tn, "guard-edit-moved", "usr-edit-moved")
 	twin := newAB(tn, "guard-edit-sa", "zot-edit", "registry.pusher", "abc123")
-	createAB(t, ab)
-	createAB(t, twin)
-	granted, twinID := waitABReady(t, ab).Status.ID, waitABReady(t, twin).Status.ID
-
-	// Сужение охвата: политика больше не судит выдачи.
-	vap := &admissionv1.ValidatingAdmissionPolicy{ObjectMeta: metav1.ObjectMeta{Name: testCfg.Policy.AdmissionGuard[0]}}
-	patchObj(t, vap, func(o client.Object) {
-		o.(*admissionv1.ValidatingAdmissionPolicy).Spec.MatchConstraints.ResourceRules[0].Resources = []string{"serviceaccounts"}
-	})
-	narrowedAway(t, ab, granted)
-	if len(recorded.of(ab, iamv1alpha1.ReasonAdmissionGuaranteeLost)) == 0 {
-		t.Fatalf("no %s event for a binding withdrawn by a policy changed in place", iamv1alpha1.ReasonAdmissionGuaranteeLost)
+	ids := map[string]string{}
+	for _, ab := range []*iamv1alpha1.AccessBinding{kept, moved, twin} {
+		createAB(t, ab)
 	}
-	consistently(t, time.Second, func() error { return stillGranted(twin, twinID) })
+	for _, ab := range []*iamv1alpha1.AccessBinding{kept, moved, twin} {
+		ids[ab.Name] = waitABReady(t, ab).Status.ID
+	}
+
+	editGuardPolicy(t, testCfg.Policy.AdmissionGuard[0], "changed by an upgrade")
+	respec(t, moved, "2")
+	narrowedAway(t, moved, ids[moved.Name])
+	if len(recorded.of(moved, iamv1alpha1.ReasonAdmissionGuaranteeLost)) == 0 {
+		t.Fatalf("no %s event for a binding whose spec changed under a policy changed in place", iamv1alpha1.ReasonAdmissionGuaranteeLost)
+	}
+	keep := func() error {
+		for _, ab := range []*iamv1alpha1.AccessBinding{kept, twin} {
+			if err := stillGranted(ab, ids[ab.Name]); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	consistently(t, 2*time.Second, keep)
+	if len(recorded.of(kept, iamv1alpha1.ReasonAdmissionGuaranteeLost)) != 0 {
+		t.Fatalf("%s reported for the confirmed binding kept through the in-place change", iamv1alpha1.ReasonAdmissionGuaranteeLost)
+	}
+
+	inForce(t, kept, moved)
+	regrant := noRegrant(t, moved)
+	consistently(t, time.Second, func() error {
+		if err := regrant(); err != nil {
+			return err
+		}
+		return keep()
+	})
+	respec(t, moved, "3")
+	if id := waitABReady(t, moved).Status.ID; id == "" || remoteAB(id).GetStatus() != iamv1.AccessBinding_ACTIVE {
+		t.Fatalf("spec change under the changed policy in force: binding %q", id)
+	}
+}
+
+// Свидетельство пишется с первого прохода, хотя выдаче учётки на перечень
+// объектов гарантия не нужна: правка политики на месте ДО того, как выдача
+// перешла на цель «всю область» (её принимают только при гарантии; субъекты
+// неизменяемы, поэтому это единственный переход), обнаружена — выдача
+// отозвана. Без записи с первого прохода оператор встретил бы политику
+// впервые при переходе и счёл бы её, старшую объекта, стоявшей при любой
+// записи. Близнец меняет один факт: тот же переход при неправленой политике
+// — выдача на всю область заведена, и правка на месте после перехода её не
+// отзывает (гарантия перехода подтверждена до правки).
+func TestABWitnessIsKeptBeforeTheBindingNeedsTheGuarantee(t *testing.T) {
+	installAdmissionGuard(t)
+	tn := newTenant(t, true)
+	reserve(t, tn, "abc123")
+	readySA(t, tn, "zot-early")
+	named := func(name string) *iamv1alpha1.AccessBinding {
+		ab := newAB(tn, name, "zot-early", "registry.pusher", "abc123")
+		ab.Annotations = map[string]string{iamv1alpha1.AnnotationCreatedBy: platformPrincipal}
+		ab.Spec.Scope.Type = iamv1alpha1.ScopeAccount
+		return ab
+	}
+	early, twin := named("witness-early"), named("witness-early-twin")
+	createAB(t, early)
+	createAB(t, twin)
+	earlyID, twinID := waitABReady(t, early).Status.ID, waitABReady(t, twin).Status.ID
+	toWhole := func(ab *iamv1alpha1.AccessBinding) {
+		patchObj(t, ab, func(o client.Object) {
+			o.(*iamv1alpha1.AccessBinding).Spec.Target = iamv1alpha1.Target{AllInScope: &iamv1alpha1.AllInScope{}}
+		})
+	}
+
+	toWhole(twin)
+	var whole string
+	eventually(t, waitReady, func() error {
+		cur := getAB(t, twin)
+		if cur.Status.ObservedGeneration != cur.Generation || cur.Status.ID == "" || cur.Status.ID == twinID || cur.Status.Replaced != nil {
+			return fmt.Errorf("%s: status %+v", twin.Name, cur.Status)
+		}
+		if b := remoteAB(cur.Status.ID); b == nil || b.GetTarget().GetAllInScope() == nil || b.GetStatus() != iamv1.AccessBinding_ACTIVE {
+			return fmt.Errorf("%s: kaname binding %v, want an active allInScope one", twin.Name, b)
+		}
+		whole = cur.Status.ID
+		return wantCondition(cur.Status.Conditions, iamv1alpha1.ConditionReady, metav1.ConditionTrue, "")
+	})
+
+	editGuardPolicy(t, testCfg.Policy.AdmissionGuard[1], "changed before the transition")
+	toWhole(early)
+	narrowedAway(t, early, earlyID)
+	if len(recorded.of(early, iamv1alpha1.ReasonAdmissionGuaranteeLost)) == 0 {
+		t.Fatalf("no %s event for the transition after a policy changed in place", iamv1alpha1.ReasonAdmissionGuaranteeLost)
+	}
+	consistently(t, time.Second, func() error { return stillGranted(twin, whole) })
+}
+
+// deletionPolicy: Orphan судит выдачу, а тип цели может перестать
+// разрешаться (снят CRD объекта цели): судить её нечем, и Orphan её не
+// оставляет — удаление CR отзывает выдачу по её id и завершается, а не
+// держит CR (и namespace) в Terminating вечно. Близнец — Orphan допустимой
+// выдачи (orphan-kept в TestABOrphanDeletionWithdrawsAForbiddenBinding).
+func TestABOrphanDeletionWithAnUnresolvableTargetTypeCompletes(t *testing.T) {
+	tn := newTenant(t, true)
+	reserve(t, tn, "abc123")
+	readySA(t, tn, "zot-ghost")
+	ab := newAB(tn, "orphan-ghost", "zot-ghost", "registry.pusher", "abc123")
+	ab.Spec.DeletionPolicy = iamv1alpha1.DeletionPolicyOrphan
+	createAB(t, ab)
+	granted := waitABReady(t, ab).Status.ID
+
+	withPolicy(t, func(p *config.Policy) {
+		r := p.TargetResolvers["registry.registries"]
+		r.Group = "ghost.kaname.in-cloud.io"
+		p.TargetResolvers = map[string]config.TargetResolver{"registry.registries": r}
+	})
+	if err := k8s.Delete(context.Background(), ab); err != nil {
+		t.Fatal(err)
+	}
+	waitGone(t, ab)
+	if got := remoteAB(granted).GetStatus(); got != iamv1.AccessBinding_REVOKED {
+		t.Fatalf("Orphan deletion of a binding whose target type does not resolve left it %s", got)
+	}
+	if len(recorded.of(ab, iamv1alpha1.ReasonPolicyNarrowed)) == 0 {
+		t.Fatalf("no %s event for the withdrawal of a binding that cannot be judged", iamv1alpha1.ReasonPolicyNarrowed)
+	}
 }
 
 // deletionPolicy: Orphan касается только удаления CR: выдача, которую
@@ -250,10 +412,11 @@ func TestABOrphanDeletionWithdrawsAForbiddenBinding(t *testing.T) {
 // spec мог быть записан, пока политик не было. Отзыв сообщается событием
 // AdmissionGuaranteeLost и счётчиком отзывов по этой причине. Платформа,
 // сверив spec, восстанавливает выдачу аннотацией rewitness без смены spec —
-// значением, поставленным после того, как оператор увидел стоящие политики.
-// Отрицание меняет один факт: значение, стоявшее раньше, чем политики
-// увидены (его мог поставить кто угодно, пока политик не было), не
-// исполняется.
+// значением, поставленным после того, как увиденные оператором политики
+// вступили в силу. Отрицания меняют по одному факту: значение, стоявшее
+// раньше, чем политики увидены (его мог поставить кто угодно, пока политик
+// не было), не исполняется; значение и смена spec, поставленные после
+// встречи с политиками, но до срока их вступления в силу, — тоже.
 func TestABReinstalledGuardWithdrawsAndThePlatformRewitnessRestores(t *testing.T) {
 	installAdmissionGuard(t)
 	tn := newTenant(t, true)
@@ -281,6 +444,22 @@ func TestABReinstalledGuardWithdrawsAndThePlatformRewitnessRestores(t *testing.T
 	regrant := noRegrant(t, ab)
 	consistently(t, 2*time.Second, regrant)
 
+	// Увиденные политики ещё не вступили в силу (часы оператора стоят):
+	// kube-apiserver мог их ещё не исполнять, и ни значение rewitness, ни
+	// смена spec в этом окне выдачи не дают — их мог поставить кто угодно.
+	ignored := len(recorded.of(ab, "RewitnessIgnored"))
+	setAnnotation(t, ab, iamv1alpha1.AnnotationRewitness, "early-"+randSuffix())
+	eventually(t, waitReady, func() error {
+		if len(recorded.of(ab, "RewitnessIgnored")) == ignored {
+			return fmt.Errorf("%s: the value set before the policies took effect is not reported ignored", ab.Name)
+		}
+		return nil
+	})
+	respec(t, ab, "early")
+	consistently(t, 2*time.Second, regrant)
+	gen = getAB(t, ab).Generation
+
+	inForce(t, ab)
 	setAnnotation(t, ab, iamv1alpha1.AnnotationRewitness, "after-"+randSuffix())
 	again := waitABReady(t, ab)
 	if again.Generation != gen || again.Status.ID == "" || again.Status.ID == granted || remoteAB(again.Status.ID).GetStatus() != iamv1.AccessBinding_ACTIVE {
@@ -293,11 +472,13 @@ func TestABReinstalledGuardWithdrawsAndThePlatformRewitnessRestores(t *testing.T
 
 // Свидетельство пишется в status с проверкой resourceVersion: проход,
 // прочитавший объект до смены spec, а политики — после неё, записал бы, что
-// политики стояли при прежнем поколении, хотя spec сменён, пока их не было.
-// Смена spec вклинивается детерминированно — посреди чтения политик (снятие,
-// смена spec, установка), оператор стоит, проходы идут прямо. Запись без
-// проверки версии (Patch без OptimisticLock) этой пробой краснеет:
-// следующий проход принял бы spec, записанный без политик, и завёл бы выдачу.
+// политики стояли в силе при прежнем поколении, хотя spec сменён после
+// чтения объекта. Опасен проход, закрепляющий запись по истечении срока
+// вступления в силу: он ставит ей текущее поколение. Смена spec вклинивается
+// детерминированно — посреди чтения политик этим проходом, оператор стоит,
+// проходы идут прямо. Запись без проверки версии (Patch без OptimisticLock)
+// этой пробой краснеет: следующий проход принял бы spec, записанный мимо
+// закрепляющего прохода, и завёл бы выдачу.
 func TestABWitnessWriteLosesToAConcurrentSpecChange(t *testing.T) {
 	stopOperator()
 	t.Cleanup(func() { restartOperator(t, testCfg) })
@@ -305,18 +486,18 @@ func TestABWitnessWriteLosesToAConcurrentSpecChange(t *testing.T) {
 	reserve(t, tn, "abc123")
 	ab := userAB(tn, "guard-race", "usr-race")
 	createAB(t, ab)
+	afterCreation(t, ab)
+	installAdmissionGuard(t)
 
 	base, err := client.NewWithWatch(restCfg, client.Options{Scheme: scheme})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var fired atomic.Bool
+	var armed, fired atomic.Bool
 	reader := interceptor.NewClient(base, interceptor.Funcs{
 		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-			if _, isPolicy := obj.(*admissionv1.ValidatingAdmissionPolicy); isPolicy && fired.CompareAndSwap(false, true) {
-				respec(t, ab, "written-without-the-guard")
-				afterCreation(t, ab)
-				installAdmissionGuard(t)
+			if _, isPolicy := obj.(*admissionv1.ValidatingAdmissionPolicy); isPolicy && armed.Load() && fired.CompareAndSwap(false, true) {
+				respec(t, ab, "written-while-the-record-settles")
 			}
 			return c.Get(ctx, key, obj, opts...)
 		},
@@ -324,18 +505,26 @@ func TestABWitnessWriteLosesToAConcurrentSpecChange(t *testing.T) {
 	r := &AccessBindingReconciler{Client: k8s, Mapper: k8s.RESTMapper(), Reader: reader, Deps: &Deps{
 		Kaname: kanameCli, Vault: vaultCli, Config: testCfg, Recorder: recorded, Clock: clk, DriftInterval: time.Minute,
 	}}
-	creates := countCalls("POST /iam/v1/accessBindings")
-	for i := range 6 {
+	pass := func(i int) {
 		if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ab)}); err != nil {
 			t.Fatalf("pass %d: %v", i, err)
 		}
+	}
+	creates := countCalls("POST /iam/v1/accessBindings")
+	// Первая встреча с политиками, моложе объекта; затем срок их вступления
+	// в силу истекает, и смена spec вклинивается в закрепляющий проход.
+	pass(0)
+	clk.SetTime(clk.Now().Add(testCfg.Policy.AdmissionEnforcementDelay.Duration + time.Second))
+	armed.Store(true)
+	for i := 1; i < 7; i++ {
+		pass(i)
 	}
 	if !fired.Load() {
 		t.Fatal("precondition: the spec change never ran between the reads")
 	}
 	cur := getAB(t, ab)
 	if n := countCalls("POST /iam/v1/accessBindings"); n != creates {
-		t.Fatalf("kaname called %d times for a spec written while the admission policies were absent: status %+v", n-creates, cur.Status)
+		t.Fatalf("kaname called %d times for a spec written past the settling pass: status %+v", n-creates, cur.Status)
 	}
 	if err := wantCondition(cur.Status.Conditions, iamv1alpha1.ConditionReady, metav1.ConditionFalse, iamv1alpha1.ReasonForbidden); err != nil {
 		t.Fatal(err)

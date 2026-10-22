@@ -80,6 +80,44 @@ func binding(created time.Time, gen int64, w *iamv1alpha1.AdmissionWitness) *iam
 	}
 }
 
+// t0 — время создания объекта проб; farNow — сверка спустя сутки: сроки
+// вступления в силу всех версий, увиденных раньше, истекли.
+var (
+	t0     = time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	farNow = t0.Add(24 * time.Hour)
+)
+
+// delay — срок вступления в силу версии политики (policy.admissionEnforcementDelay) проб.
+const delay = 10 * time.Second
+
+func guardPolicy(names []string) config.Policy {
+	return config.Policy{AdmissionGuard: names, AdmissionEnforcementDelay: config.Duration{Duration: delay}}
+}
+
+// pending — запись e, версия которой увидена в since и ещё не вступила в силу.
+func pending(e iamv1alpha1.AdmissionPolicyUIDs, since time.Time) iamv1alpha1.AdmissionPolicyUIDs {
+	t := metav1.NewTime(since)
+	e.PendingSince = &t
+	return e
+}
+
+// confirmedAt — свидетельство w с подтверждением гарантии поколения gen при
+// значении created-by by.
+func confirmedAt(w *iamv1alpha1.AdmissionWitness, gen int64, by string) *iamv1alpha1.AdmissionWitness {
+	w.ConfirmedGeneration, w.ConfirmedCreatedBy = gen, by
+	return w
+}
+
+// sameRecord — записи равны, отметка pendingSince — по моменту.
+func sameRecord(a, b iamv1alpha1.AdmissionPolicyUIDs) bool {
+	pa, pb := a.PendingSince, b.PendingSince
+	a.PendingSince, b.PendingSince = nil, nil
+	if a != b || (pa == nil) != (pb == nil) {
+		return false
+	}
+	return pa == nil || pa.Equal(pb)
+}
+
 func guardClient(objs []client.Object) client.Reader {
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
@@ -103,12 +141,54 @@ func refused(t *testing.T, g Guarantee, err error, want string) {
 	}
 }
 
+// checkAt — сверка в момент now.
+func checkAt(objs []client.Object, names []string, ab *iamv1alpha1.AccessBinding, now time.Time) (Guarantee, error) {
+	return CheckAdmissionGuarantee(context.Background(), guardClient(objs), guardPolicy(names), ab, now)
+}
+
+// check — сверка в farNow.
 func check(objs []client.Object, names []string, ab *iamv1alpha1.AccessBinding) (Guarantee, error) {
-	return CheckAdmissionGuarantee(context.Background(), guardClient(objs), config.Policy{AdmissionGuard: names}, ab, time.Now())
+	return checkAt(objs, names, ab, farNow)
+}
+
+// holds — гарантия есть.
+func holds(t *testing.T, g Guarantee, err error, what string) {
+	t.Helper()
+	if g.Violation != nil || err != nil {
+		t.Fatalf("%s: refused: %v %v", what, g.Violation, err)
+	}
+}
+
+// edited — objs, где политика (policy) либо привязка name правлена на месте:
+// uid тот же, metadata.generation вырос.
+func edited(objs []client.Object, name string, policy bool) []client.Object {
+	for _, obj := range objs {
+		switch o := obj.(type) {
+		case *admissionv1.ValidatingAdmissionPolicy:
+			if policy && o.Name == name {
+				o.Generation++
+			}
+		case *admissionv1.ValidatingAdmissionPolicyBinding:
+			if !policy && o.Name == name {
+				o.Generation++
+			}
+		}
+	}
+	return objs
+}
+
+// reinstalled — objs, где политика name переустановлена: новый uid.
+func reinstalled(objs []client.Object, name string) []client.Object {
+	for _, obj := range objs {
+		if p, ok := obj.(*admissionv1.ValidatingAdmissionPolicy); ok && p.Name == name {
+			p.UID += "-again"
+		}
+	}
+	return objs
 }
 
 func TestAdmissionGuaranteeHoldsOnlyWhenEveryFactHolds(t *testing.T) {
-	created := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	created := t0
 	run := func(names []string, mutate func([]client.Object) []client.Object) (Guarantee, error) {
 		objs := guard(created.Add(-time.Hour))
 		if mutate != nil {
@@ -164,51 +244,30 @@ func TestAdmissionGuaranteeHoldsOnlyWhenEveryFactHolds(t *testing.T) {
 
 // Гарантия судится на последнюю смену spec: политика, поставленная ПОСЛЕ
 // создания объекта, держит его spec, если оператор видел её (тот же uid и то
-// же поколение) при прежнем поколении spec — объект с тем же uid существует
-// непрерывно, а не правленный с тех пор — тот же, значит, стоял и при смене.
-// Законный близнец — запись поколения 1 у объекта поколения 2; каждое
-// отрицание меняет один факт.
+// же поколение, срок вступления в силу истёк) при прежнем поколении spec —
+// объект с тем же uid существует непрерывно, а не правленный с тех пор — тот
+// же, значит, стоял и при смене. Законный близнец — запись поколения 1 у
+// объекта поколения 2; каждое отрицание меняет один факт.
 func TestAdmissionGuaranteeIsJudgedAtTheLastSpecChange(t *testing.T) {
-	created := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	created := t0
 	later := func() []client.Object { return guard(created.Add(time.Hour)) }
 	g, err := check(later(), guardNames, binding(created, 2, seen(1)))
-	if g.Violation != nil || err != nil {
-		t.Fatalf("lawful twin refused: policies seen at generation 1, spec changed to generation 2: %v %v", g.Violation, err)
-	}
-	if want := seen(1); !equalWitness(g.Witness, want) {
-		t.Fatalf("witness = %+v, want the generation-1 records kept: they still prove every later spec change", g.Witness)
+	holds(t, g, err, "lawful twin: policies seen at generation 1, spec changed to generation 2")
+	if want := confirmedAt(seen(1), 2, ""); !equalWitness(g.Witness, want) {
+		t.Fatalf("witness = %+v, want the generation-1 records kept and generation 2 confirmed", g.Witness)
 	}
 
-	editPolicy := func(name string) func([]client.Object) []client.Object {
-		return func(o []client.Object) []client.Object {
-			for _, obj := range o {
-				if p, ok := obj.(*admissionv1.ValidatingAdmissionPolicy); ok && p.Name == name {
-					p.Generation = 2
-				}
-			}
-			return o
-		}
-	}
-	editBinding := func(name string) func([]client.Object) []client.Object {
-		return func(o []client.Object) []client.Object {
-			for _, obj := range o {
-				if b, ok := obj.(*admissionv1.ValidatingAdmissionPolicyBinding); ok && b.Name == name {
-					b.Generation = 2
-				}
-			}
-			return o
-		}
-	}
 	cases := []struct {
 		name    string
 		witness *iamv1alpha1.AdmissionWitness
 		mutate  func([]client.Object) []client.Object
 		want    string
 		// record — запись о политике kio-writers, которую сверка обязана
-		// оставить: увиденное сейчас, при текущем поколении 2.
+		// оставить: увиденное сейчас, при текущем поколении 2; новая версия —
+		// с отметкой pendingSince, пока срок вступления в силу не истёк.
 		record iamv1alpha1.AdmissionPolicyUIDs
 	}{
-		{"no witness, policies installed after the object", nil, nil, "kio-writers was installed after", entry("kio-writers", 2)},
+		{"no witness, policies installed after the object", nil, nil, "kio-writers was installed after", pending(entry("kio-writers", 2), farNow)},
 		{"witness of the current generation", seen(2), nil, "kio-writers was installed", entry("kio-writers", 2)},
 		{"policy reinstalled since the witness", func() *iamv1alpha1.AdmissionWitness {
 			w := seen(1)
@@ -219,20 +278,20 @@ func TestAdmissionGuaranteeIsJudgedAtTheLastSpecChange(t *testing.T) {
 			w := seen(1)
 			w.Policies[0].BindingUID = "binding-kio-writers-before"
 			return w
-		}(), nil, "admission policy binding kio-writers was", entry("kio-writers", 2)},
+		}(), nil, "admission policy binding kio-writers was", pending(entry("kio-writers", 2), farNow)},
 		// Правка на месте: uid тот же, поколение выросло — какой версией
 		// политики записан текущий spec, неизвестно.
-		{"policy changed in place since the witness", seen(1), editPolicy("kio-writers"),
+		{"policy changed in place since the witness", seen(1), func(o []client.Object) []client.Object { return edited(o, "kio-writers", true) },
 			"admission policy kio-writers was changed in place", func() iamv1alpha1.AdmissionPolicyUIDs {
 				e := entry("kio-writers", 2)
 				e.PolicyGeneration = 2
-				return e
+				return pending(e, farNow)
 			}()},
-		{"binding changed in place since the witness", seen(1), editBinding("kio-writers"),
+		{"binding changed in place since the witness", seen(1), func(o []client.Object) []client.Object { return edited(o, "kio-writers", false) },
 			"admission policy binding kio-writers was changed in place", func() iamv1alpha1.AdmissionPolicyUIDs {
 				e := entry("kio-writers", 2)
 				e.BindingGeneration = 2
-				return e
+				return pending(e, farNow)
 			}()},
 	}
 	for _, tc := range cases {
@@ -245,7 +304,7 @@ func TestAdmissionGuaranteeIsJudgedAtTheLastSpecChange(t *testing.T) {
 			refused(t, g, err, tc.want)
 			// Запись, которая ничего не доказывает, заменяется увиденным
 			// сейчас: она докажет следующую смену spec.
-			if got := find(g.Witness, "kio-writers"); got == nil || *got != tc.record {
+			if got := find(g.Witness, "kio-writers"); got == nil || !sameRecord(*got, tc.record) {
 				t.Fatalf("witness record of kio-writers = %+v, want %+v", got, tc.record)
 			}
 		})
@@ -253,27 +312,25 @@ func TestAdmissionGuaranteeIsJudgedAtTheLastSpecChange(t *testing.T) {
 
 	t.Run("policies predating the object need no witness and are witnessed", func(t *testing.T) {
 		g, err := check(guard(created.Add(-time.Hour)), guardNames, binding(created, 5, nil))
-		if g.Violation != nil || err != nil {
-			t.Fatalf("refused: %v %v", g.Violation, err)
-		}
-		if want := seen(0); !equalWitness(g.Witness, want) {
+		holds(t, g, err, "policies predating the object")
+		if want := confirmedAt(seen(0), 5, ""); !equalWitness(g.Witness, want) {
 			t.Fatalf("witness = %+v, want %+v: a policy older than the object proves every generation", g.Witness, want)
 		}
 	})
 	// Политика старше объекта, но правлена на месте после того, как оператор
-	// её видел: старшинство больше ничего не доказывает — правка могла
-	// случиться до последней смены spec. И не доказывает на следующем проходе:
-	// запись, оставленная отказом, не открывает выдачу, пока spec не сменён.
+	// её видел, а подтверждения гарантии у объекта нет: старшинство больше
+	// ничего не доказывает — правка могла случиться до последней смены spec.
+	// И не доказывает ни до срока вступления новой версии в силу, ни после
+	// него: запись, оставленная отказом, не открывает выдачу, пока spec не
+	// сменён при действующей версии.
 	t.Run("a predating policy changed in place proves nothing, on this pass and the next", func(t *testing.T) {
-		objs := editPolicy("kio-writers")(guard(created.Add(-time.Hour)))
+		objs := edited(guard(created.Add(-time.Hour)), "kio-writers", true)
 		g, err := check(objs, guardNames, binding(created, 3, seen(0)))
 		refused(t, g, err, "admission policy kio-writers was changed in place")
-		g, err = check(objs, guardNames, binding(created, 3, g.Witness))
+		g, err = checkAt(objs, guardNames, binding(created, 3, g.Witness), farNow.Add(delay))
 		refused(t, g, err, "kio-writers was installed or changed after")
-		g, err = check(objs, guardNames, binding(created, 4, g.Witness))
-		if g.Violation != nil || err != nil {
-			t.Fatalf("next spec change under the changed, already seen policy refused: %v %v", g.Violation, err)
-		}
+		g, err = checkAt(objs, guardNames, binding(created, 4, g.Witness), farNow.Add(delay+time.Second))
+		holds(t, g, err, "next spec change under the changed policy in force")
 	})
 	t.Run("an absent policy is not witnessed", func(t *testing.T) {
 		g, err := check(later()[1:], guardNames, binding(created, 2, seen(1)))
@@ -293,7 +350,7 @@ func TestAdmissionGuaranteeIsJudgedAtTheLastSpecChange(t *testing.T) {
 // факт: добавленная политика моложе объекта и прежде не увидена — её запись
 // при текущем поколении ничего не доказывает.
 func TestAdmissionGuaranteeKeepsEachPolicyWitness(t *testing.T) {
-	created := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	created := t0
 	three := append(append([]string{}, guardNames...), "kio-status")
 	objs := append(guard(created.Add(time.Hour)), guard(created.Add(-time.Hour), "kio-status")...)
 
@@ -302,7 +359,7 @@ func TestAdmissionGuaranteeKeepsEachPolicyWitness(t *testing.T) {
 		t.Fatalf("a policy older than the object added to the guard refused: %v %v", g.Violation, err)
 	}
 	want := &iamv1alpha1.AdmissionWitness{Policies: []iamv1alpha1.AdmissionPolicyUIDs{
-		entry("kio-writers", 1), entry("kio-bindings", 1), entry("kio-status", 0)}}
+		entry("kio-writers", 1), entry("kio-bindings", 1), entry("kio-status", 0)}, ConfirmedGeneration: 2}
 	if !equalWitness(g.Witness, want) {
 		t.Fatalf("witness = %+v, want %+v: the records of the kept policies are not rewritten", g.Witness, want)
 	}
@@ -331,29 +388,30 @@ func TestAdmissionGuaranteeKeepsEachPolicyWitness(t *testing.T) {
 	}
 }
 
+// withNonce — объект поколения gen со свидетельством w и значением nonce
+// аннотации rewitness.
+func withNonce(gen int64, w *iamv1alpha1.AdmissionWitness, nonce string) *iamv1alpha1.AccessBinding {
+	ab := binding(t0, gen, w)
+	ab.Annotations = map[string]string{iamv1alpha1.AnnotationRewitness: nonce}
+	return ab
+}
+
 // Аннотация rewitness — платформа просит засвидетельствовать стоящие
 // политики для текущего spec (после переустановки политик, без смены spec).
 // Исполняется только значение, поставленное ПОСЛЕ того, как оператор увидел
-// эти политики: его подлинность держат они же (ставит только платформа).
-// Отрицания меняют по одному факту: значение уже учтено; политики при
-// значении ещё не увидены; политика не отказывает.
+// эти политики вступившими в силу: его подлинность держат они же (ставит
+// только платформа). Отрицания меняют по одному факту: значение уже учтено;
+// политики при значении ещё не увидены; политика не отказывает.
 func TestAdmissionGuaranteeRewitnessByThePlatform(t *testing.T) {
-	created := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	created := t0
 	objs := guard(created.Add(time.Hour))
-	withNonce := func(gen int64, w *iamv1alpha1.AdmissionWitness, nonce string) *iamv1alpha1.AccessBinding {
-		ab := binding(created, gen, w)
-		ab.Annotations = map[string]string{iamv1alpha1.AnnotationRewitness: nonce}
-		return ab
-	}
 	// Переустановленные политики увидены при поколении 2, spec не менялся.
 	g, err := check(objs, guardNames, withNonce(2, seen(2), "n1"))
-	if g.Violation != nil || err != nil {
-		t.Fatalf("rewitness of seen policies refused: %v %v", g.Violation, err)
-	}
+	holds(t, g, err, "rewitness of seen policies")
 	if g.Rewitness != "n1" || !g.Rewitnessed {
 		t.Fatalf("rewitness = %q honoured %v, want n1 honoured", g.Rewitness, g.Rewitnessed)
 	}
-	want := seen(0)
+	want := confirmedAt(seen(0), 2, "")
 	want.RewitnessNonce = "n1"
 	if !equalWitness(g.Witness, want) {
 		t.Fatalf("witness = %+v, want %+v", g.Witness, want)
@@ -373,7 +431,8 @@ func TestAdmissionGuaranteeRewitnessByThePlatform(t *testing.T) {
 	})
 	// Значение стояло раньше, чем оператор увидел политики: его мог поставить
 	// кто угодно, пока политик не было. Оно учитывается (не исполняется и
-	// впредь), политики записываются — новое значение платформы исполнится.
+	// впредь), политики записываются — новое значение платформы, поставленное
+	// после того, как они вступили в силу, исполнится.
 	t.Run("a value set before the policies were seen is not honoured", func(t *testing.T) {
 		g, err := check(objs, guardNames, withNonce(2, nil, "n1"))
 		refused(t, g, err, "kio-writers was installed after")
@@ -383,11 +442,11 @@ func TestAdmissionGuaranteeRewitnessByThePlatform(t *testing.T) {
 		if g.Witness == nil || g.Witness.RewitnessNonce != "n1" {
 			t.Fatalf("witness %+v does not account for n1", g.Witness)
 		}
-		g, err = check(objs, guardNames, withNonce(2, g.Witness, "n1"))
+		g, err = checkAt(objs, guardNames, withNonce(2, g.Witness, "n1"), farNow.Add(delay))
 		refused(t, g, err, "kio-writers was installed or changed after")
-		g, err = check(objs, guardNames, withNonce(2, g.Witness, "n2"))
+		g, err = checkAt(objs, guardNames, withNonce(2, g.Witness, "n2"), farNow.Add(delay+time.Second))
 		if g.Violation != nil || err != nil || !g.Rewitnessed {
-			t.Fatalf("a new value after the policies were seen: %v %v honoured %v", g.Violation, err, g.Rewitnessed)
+			t.Fatalf("a new value after the policies took effect: %v %v honoured %v", g.Violation, err, g.Rewitnessed)
 		}
 	})
 	t.Run("a policy reinstalled since it was seen is not rewitnessed", func(t *testing.T) {
@@ -410,6 +469,143 @@ func TestAdmissionGuaranteeRewitnessByThePlatform(t *testing.T) {
 	})
 }
 
+// Окно между тем, как оператор увидел версию политики, и тем, как её
+// исполняет kube-apiserver (он перечитывает политики периодически, раз в
+// секунду, каждый экземпляр — со своим отставанием): запись о версии не
+// доказывает ничего, пока от первой встречи с ней не истёк срок
+// policy.admissionEnforcementDelay. P1–P4 — четыре пути через окно; близнецы
+// — те же входы спустя срок.
+func TestAdmissionGuaranteeWaitsUntilThePolicyTakesEffect(t *testing.T) {
+	created := t0
+	installed := created.Add(time.Hour)
+	objs := guard(installed)
+	// Записи прежних политик U1; поставлены новые U2.
+	before := seen(1)
+	for i := range before.Policies {
+		before.Policies[i].PolicyUID += "-before"
+		before.Policies[i].BindingUID += "-before"
+	}
+	// Проход через 0,1 с после установки U2, при поколении spec 5: переустановка увидена.
+	seenAt := installed.Add(100 * time.Millisecond)
+	first, err := checkAt(objs, guardNames, binding(created, 5, before), seenAt)
+	refused(t, first, err, "reinstalled")
+
+	t.Run("P1 a spec change before the policy takes effect is not proven", func(t *testing.T) {
+		now := installed.Add(600 * time.Millisecond)
+		g, err := checkAt(objs, guardNames, binding(created, 6, first.Witness), now)
+		refused(t, g, err, "admissionEnforcementDelay")
+		if want := seenAt.Add(delay).Sub(now); g.RecheckAfter != want {
+			t.Fatalf("recheck after %s, want %s: the version takes effect then", g.RecheckAfter, want)
+		}
+	})
+	t.Run("P2 a rewitness before the policy takes effect is accounted, not honoured", func(t *testing.T) {
+		g, err := checkAt(objs, guardNames, withNonce(5, first.Witness, "n1"), installed.Add(600*time.Millisecond))
+		refused(t, g, err, "admissionEnforcementDelay")
+		if g.Rewitness != "n1" || g.Rewitnessed {
+			t.Fatalf("rewitness = %q honoured %v, want n1 accounted and not honoured", g.Rewitness, g.Rewitnessed)
+		}
+	})
+	// Близнецы P1 и P2: проход после срока закрепляет записи при текущем
+	// поколении (оно само не доказано); смена spec и значение rewitness после
+	// него — при действующей политике.
+	settled, err := checkAt(objs, guardNames, binding(created, 5, first.Witness), seenAt.Add(delay))
+	refused(t, settled, err, "installed or changed after")
+	for _, p := range settled.Witness.Policies {
+		if p.PendingSince != nil || p.Generation != 5 {
+			t.Fatalf("record %+v after the delay, want it in force at generation 5", p)
+		}
+	}
+	t.Run("twin P1: a spec change after the policy took effect is proven", func(t *testing.T) {
+		g, err := checkAt(objs, guardNames, binding(created, 6, settled.Witness), seenAt.Add(delay+time.Second))
+		holds(t, g, err, "spec change after the delay")
+	})
+	t.Run("twin P2: a rewitness after the policy took effect is honoured", func(t *testing.T) {
+		g, err := checkAt(objs, guardNames, withNonce(5, settled.Witness, "n1"), seenAt.Add(delay+time.Second))
+		holds(t, g, err, "rewitness after the delay")
+		if !g.Rewitnessed {
+			t.Fatal("rewitness after the delay not honoured")
+		}
+	})
+
+	// P3, P4: политика не старше объекта, если создана меньше чем за срок (и
+	// секунду точности отметок времени) до него. Записи нет — одна запись
+	// объекта, наблюдать status не нужно.
+	for _, tc := range []struct {
+		name   string
+		object time.Time
+	}{
+		{"P3 an object created half a second after the policy", installed.Add(500 * time.Millisecond)},
+		{"P4 an object created within the second of the policy", installed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g, err := checkAt(objs, guardNames, binding(tc.object, 1, nil), tc.object.Add(100*time.Millisecond))
+			refused(t, g, err, "was installed after")
+		})
+	}
+	t.Run("twin P3 P4: an object created longer than the delay after the policy", func(t *testing.T) {
+		object := installed.Add(delay + time.Second + 500*time.Millisecond)
+		g, err := checkAt(objs, guardNames, binding(object, 1, nil), object.Add(100*time.Millisecond))
+		holds(t, g, err, "object created after the delay")
+	})
+}
+
+// Смена values чарта правит политики допуска на месте (uid тот же,
+// metadata.generation растёт). spec, гарантию которого проход уже подтвердил
+// при прежней, действовавшей версии, правка не отзывает — ни до срока
+// вступления новой версии в силу, ни после. Отрицания меняют по одному факту
+// против законного близнеца: spec сменён после подтверждения; сменилось
+// значение created-by; политика переустановлена (пока её не было, status мог
+// писать кто угодно — подтверждение в нём ничего не доказывает).
+func TestAdmissionGuaranteeConfirmedSpecSurvivesAnInPlaceChange(t *testing.T) {
+	const platform, other = "system:serviceaccount:platform-system:onboarding", "system:serviceaccount:platform-system:other"
+	created := t0
+	at := created.Add(time.Hour)
+	byPlatform := func(gen int64, w *iamv1alpha1.AdmissionWitness) *iamv1alpha1.AccessBinding {
+		ab := binding(created, gen, w)
+		ab.Annotations = map[string]string{iamv1alpha1.AnnotationCreatedBy: platform}
+		return ab
+	}
+	g, err := checkAt(guard(created.Add(-time.Hour)), guardNames, byPlatform(1, nil), at)
+	holds(t, g, err, "policies predating the object")
+	confirmed := g.Witness
+	if confirmed == nil || confirmed.ConfirmedGeneration != 1 || confirmed.ConfirmedCreatedBy != platform {
+		t.Fatalf("witness %+v does not confirm generation 1 by %s", confirmed, platform)
+	}
+	upgraded := func() []client.Object { return edited(guard(created.Add(-time.Hour)), "kio-bindings", true) }
+
+	t.Run("the confirmed spec is kept while the new version takes effect and after it", func(t *testing.T) {
+		g, err := checkAt(upgraded(), guardNames, byPlatform(1, confirmed.DeepCopy()), at.Add(time.Second))
+		holds(t, g, err, "in-place change, before the delay")
+		if rec := find(g.Witness, "kio-bindings"); rec == nil || rec.PendingSince == nil || rec.PolicyGeneration != 2 {
+			t.Fatalf("record of the changed policy = %+v, want the new version pending", rec)
+		}
+		g, err = checkAt(upgraded(), guardNames, byPlatform(1, g.Witness), at.Add(time.Second+delay))
+		holds(t, g, err, "in-place change, after the delay")
+		g, err = checkAt(upgraded(), guardNames, byPlatform(2, g.Witness), at.Add(2*time.Second+delay))
+		holds(t, g, err, "spec change under the new version in force")
+	})
+	t.Run("a spec changed after the confirmation is refused", func(t *testing.T) {
+		g, err := checkAt(upgraded(), guardNames, byPlatform(2, confirmed.DeepCopy()), at.Add(time.Second))
+		refused(t, g, err, "admission policy kio-bindings was changed in place")
+	})
+	t.Run("a created-by changed after the confirmation is refused", func(t *testing.T) {
+		ab := byPlatform(1, confirmed.DeepCopy())
+		ab.Annotations[iamv1alpha1.AnnotationCreatedBy] = other
+		g, err := checkAt(upgraded(), guardNames, ab, at.Add(time.Second))
+		refused(t, g, err, "admission policy kio-bindings was changed in place")
+	})
+	t.Run("a reinstalled policy drops the confirmation", func(t *testing.T) {
+		objs := reinstalled(guard(created.Add(-time.Hour)), "kio-bindings")
+		g, err := checkAt(objs, guardNames, byPlatform(1, confirmed.DeepCopy()), at.Add(time.Second))
+		refused(t, g, err, "admission policy kio-bindings was reinstalled")
+		if g.Witness.ConfirmedGeneration != 0 {
+			t.Fatalf("confirmation %d survived a reinstall", g.Witness.ConfirmedGeneration)
+		}
+		g, err = checkAt(objs, guardNames, byPlatform(1, g.Witness), at.Add(2*time.Second+delay))
+		refused(t, g, err, "installed or changed after")
+	})
+}
+
 func find(w *iamv1alpha1.AdmissionWitness, name string) *iamv1alpha1.AdmissionPolicyUIDs {
 	if w == nil {
 		return nil
@@ -423,11 +619,12 @@ func find(w *iamv1alpha1.AdmissionWitness, name string) *iamv1alpha1.AdmissionPo
 }
 
 func equalWitness(a, b *iamv1alpha1.AdmissionWitness) bool {
-	if a == nil || b == nil || a.RewitnessNonce != b.RewitnessNonce || len(a.Policies) != len(b.Policies) {
+	if a == nil || b == nil || a.RewitnessNonce != b.RewitnessNonce || len(a.Policies) != len(b.Policies) ||
+		a.ConfirmedGeneration != b.ConfirmedGeneration || a.ConfirmedCreatedBy != b.ConfirmedCreatedBy {
 		return a == b
 	}
 	for _, p := range b.Policies {
-		if got := find(a, p.Name); got == nil || *got != p {
+		if got := find(a, p.Name); got == nil || !sameRecord(*got, p) {
 			return false
 		}
 	}
