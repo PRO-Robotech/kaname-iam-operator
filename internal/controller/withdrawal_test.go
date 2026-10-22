@@ -370,7 +370,7 @@ func TestABOrphanDeletionWithdrawsAForbiddenBinding(t *testing.T) {
 	}
 	failing := []*iamv1alpha1.AccessBinding{retried, lost}
 	for _, ab := range failing {
-		fakeK.Fail("POST", "^/iam/v1/accessBindings/"+ids[ab.Name]+":revoke$", codes.Unavailable, 2)
+		fakeK.Fail("POST", "^/iam/v1/accessBindings/"+ids[ab.Name]+":revoke$", codes.Unavailable, 4)
 	}
 	removeAdmissionGuard(t)
 	installAdmissionGuard(t)
@@ -381,6 +381,19 @@ func TestABOrphanDeletionWithdrawsAForbiddenBinding(t *testing.T) {
 			return wantCondition(getAB(t, ab).Status.Conditions, iamv1alpha1.ConditionRejected, metav1.ConditionTrue, iamv1alpha1.ReasonPolicyNarrowed)
 		})
 	}
+	// Записи переустановленных политик закрепляются по сроку вступления в
+	// силу: тогда на удалении (поколение растёт) сверка гарантии lost не
+	// отказывает, и Orphan держит только уже начатый отзыв.
+	clk.SetTime(clk.Now().Add(testCfg.Policy.AdmissionEnforcementDelay.Duration + time.Second))
+	eventually(t, waitReady, func() error {
+		cur := getAB(t, lost)
+		for _, name := range testCfg.Policy.AdmissionGuard {
+			if rec := witnessRecord(cur, name); rec == nil || rec.PendingSince != nil {
+				return fmt.Errorf("%s: witness record of %s = %+v, want it in force", lost.Name, name, rec)
+			}
+		}
+		return nil
+	})
 	for _, ab := range failing {
 		if got := remoteAB(ids[ab.Name]).GetStatus(); got != iamv1.AccessBinding_ACTIVE {
 			t.Fatalf("precondition: %s is to be deleted while its revoke fails, yet its binding is %s", ab.Name, got)
@@ -401,7 +414,7 @@ func TestABOrphanDeletionWithdrawsAForbiddenBinding(t *testing.T) {
 	}
 	for _, ab := range failing {
 		if n := countCalls("POST /iam/v1/accessBindings/" + ids[ab.Name] + ":revoke"); n < 3 {
-			t.Errorf("%s: revoke called %d times, want the two refused calls repeated until it succeeds", ab.Name, n)
+			t.Errorf("%s: revoke called %d times, want the refused calls repeated until it succeeds", ab.Name, n)
 		}
 	}
 	if got := remoteAB(ids[kept.Name]).GetStatus(); got != iamv1.AccessBinding_ACTIVE {

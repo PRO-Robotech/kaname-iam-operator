@@ -266,7 +266,8 @@ def go_vet(path, pkgs):
     if not path.endswith(".go"):
         return 0, ""
     targets = ["./" + os.path.dirname(path) + "/"] + [p for p in pkgs.split() if p != "./" + os.path.dirname(path) + "/"]
-    r = subprocess.run(["go", "vet", *targets], cwd=ROOT, capture_output=True, text=True, timeout=900)
+    # unreachable снят: инъекция законно роняет ветвь ранним return.
+    r = subprocess.run(["go", "vet", "-unreachable=false", *targets], cwd=ROOT, capture_output=True, text=True, timeout=900)
     return r.returncode, (r.stdout + r.stderr).strip()
 
 
