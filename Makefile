@@ -97,9 +97,11 @@ lint-config: golangci-lint ## Verify golangci-lint configuration.
 	"$(GOLANGCI_LINT)" config verify
 
 .PHONY: helm-lint
-helm-lint: ## Lint and render the chart.
-	helm lint $(CHART_DIR)
-	helm template t $(CHART_DIR) --namespace kaname-iam-system >/dev/null
+helm-lint: ## Lint and render the chart with a complete configuration (defaults alone are refused by design).
+	helm lint $(CHART_DIR) -f test/admission/testdata/values.yaml
+	helm template t $(CHART_DIR) --namespace kaname-iam-system -f test/admission/testdata/values.yaml >/dev/null
+	@if helm template t $(CHART_DIR) --namespace kaname-iam-system >/dev/null 2>&1; then \
+		echo "helm-lint: the chart rendered without a configuration; it must refuse"; exit 1; fi
 
 ##@ Build
 
