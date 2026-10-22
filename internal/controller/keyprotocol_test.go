@@ -406,4 +406,78 @@ func TestKeyProtocolVaultFailureAfterIssueConverges(t *testing.T) {
 	}
 }
 
+// foreignRecord — запись Vault по пути этого ключа, которую написал владелец
+// другого CR (другой кластер с общим Vault либо пересечение шаблонов).
+func foreignRecord() map[string]string {
+	return map[string]string{
+		vaultUsername: "sak-other", vaultKeyID: "sak-other", vaultPassword: "kacho_other", vaultSAID: "sva-other",
+		vaultNonce: "n-other", "ownerUid": "uid-other", "cluster": "c2", "keyName": "push",
+	}
+}
+
+func sameRecord(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+// Чужая запись по пути ключа не перезаписывается: оператор не выпускает ключ,
+// которому некуда лечь, и называет конфликт. Близнец — первый выпуск на
+// свободный путь (TestKeyProtocolIssuesWithTheRecordedNonce).
+func TestKeyProtocolDoesNotOverwriteAForeignRecord(t *testing.T) {
+	h := newProtoHarness(t)
+	h.v.Put(vaultMount, h.path(), foreignRecord())
+	_, before := h.v.Get(vaultMount, h.path())
+	h.settle(t)
+	data, ver := h.v.Get(vaultMount, h.path())
+	if !sameRecord(data, foreignRecord()) || ver != before {
+		t.Fatalf("foreign record rewritten: version %d→%d, data %v", before, ver, data)
+	}
+	if h.issueCalls() != 0 {
+		t.Fatalf("issued %d keys for a path held by a foreign record", h.issueCalls())
+	}
+	if err := wantCondition(h.sa(t).Status.Conditions, iamv1alpha1.ConditionKeysReady, metav1.ConditionFalse, iamv1alpha1.ReasonNotOwned); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Удаление CR не стирает чужую запись по пути своего ключа.
+func TestKeyProtocolDeletionLeavesAForeignRecord(t *testing.T) {
+	h := newProtoHarness(t)
+	h.ready(t)
+	h.v.Put(vaultMount, h.path(), foreignRecord())
+	if err := h.c.Delete(context.Background(), h.sa(t)); err != nil {
+		t.Fatal(err)
+	}
+	h.settle(t)
+	if err := h.c.Get(context.Background(), h.key, &iamv1alpha1.ServiceAccount{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("CR still present: %v", err)
+	}
+	if data, _ := h.v.Get(vaultMount, h.path()); !sameRecord(data, foreignRecord()) {
+		t.Fatalf("foreign record removed or rewritten by the deletion: %v", data)
+	}
+}
+
+// Законный близнец: своя запись при удалении CR снимается.
+func TestKeyProtocolDeletionRemovesItsOwnRecord(t *testing.T) {
+	h := newProtoHarness(t)
+	h.ready(t)
+	if data, _ := h.v.Get(vaultMount, h.path()); data == nil {
+		t.Fatal("precondition: no own record after the first issue")
+	}
+	if err := h.c.Delete(context.Background(), h.sa(t)); err != nil {
+		t.Fatal(err)
+	}
+	h.settle(t)
+	if data, _ := h.v.Get(vaultMount, h.path()); data != nil {
+		t.Fatalf("own record survived the deletion: %v", data)
+	}
+}
+
 func tsOf(t time.Time) *timestamppb.Timestamp { return timestamppb.New(t) }

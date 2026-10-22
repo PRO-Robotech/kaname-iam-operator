@@ -305,6 +305,44 @@ func TestSASpecDisableAndUpdateReachKaname(t *testing.T) {
 	}
 }
 
+// Учётка, отключённая ПО SPEC, включается снова по spec, без resync и без
+// дрейфа. Близнец — TestSADisabledInKanameStaysDriftedUntilResync: отключение
+// мимо оператора остаётся дрейфом.
+func TestSADisabledBySpecIsEnabledAgainBySpec(t *testing.T) {
+	tn := newTenant(t, true)
+	sa := newSA(tn, "zot-toggle")
+	createSA(t, sa)
+	cur := waitSAReady(t, sa)
+	patchObj(t, sa, func(o client.Object) { o.(*iamv1alpha1.ServiceAccount).Spec.Enabled = ptr.To(false) })
+	eventually(t, waitReady, func() error {
+		if remoteSA(t, cur.Status.ID).GetEnabled() {
+			return fmt.Errorf("not disabled in kaname")
+		}
+		c := getSA(t, sa)
+		if c.Status.ObservedGeneration != c.Generation {
+			return fmt.Errorf("generation not observed")
+		}
+		return wantCondition(c.Status.Conditions, iamv1alpha1.ConditionReady, metav1.ConditionTrue, iamv1alpha1.ReasonDisabled)
+	})
+	patchObj(t, sa, func(o client.Object) { o.(*iamv1alpha1.ServiceAccount).Spec.Enabled = ptr.To(true) })
+	eventually(t, waitReady, func() error {
+		if !remoteSA(t, cur.Status.ID).GetEnabled() {
+			return fmt.Errorf("not enabled again in kaname")
+		}
+		c := getSA(t, sa)
+		if c.Status.ObservedGeneration != c.Generation {
+			return fmt.Errorf("generation not observed")
+		}
+		if err := wantCondition(c.Status.Conditions, iamv1alpha1.ConditionDrifted, metav1.ConditionFalse, ""); err != nil {
+			return err
+		}
+		return wantCondition(c.Status.Conditions, iamv1alpha1.ConditionReady, metav1.ConditionTrue, iamv1alpha1.ReasonReconciled)
+	})
+	if c := getSA(t, sa); c.Status.ResyncNonce != "" {
+		t.Fatalf("enabling by spec consumed a resync nonce %q", c.Status.ResyncNonce)
+	}
+}
+
 func TestSAKeyRotatesWithOverlapAndRevokesThePrevious(t *testing.T) {
 	tn := newTenant(t, true)
 	k := pushKey()

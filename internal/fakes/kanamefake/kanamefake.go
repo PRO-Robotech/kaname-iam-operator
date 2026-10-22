@@ -13,11 +13,13 @@
 package kanamefake
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"sort"
@@ -64,6 +66,7 @@ type Server struct {
 	opFaults     []*fault
 	calls        []string
 	issueHook    func(keyID string)
+	requestHook  func(method, path string, body []byte)
 	tokenCounter int
 }
 
@@ -139,6 +142,16 @@ func (s *Server) AddRole(name string, system bool) string {
 	return id
 }
 
+// AddAccountRole заводит роль арендатора в аккаунте и возвращает её id: имя
+// у неё любое, в том числе имя системной роли.
+func (s *Server) AddAccountRole(name, accountID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id := newID("rol")
+	s.roles[id] = &iamv1.Role{Id: id, Name: name, AccountId: accountID}
+	return id
+}
+
 // DenyScope — вызовы в аккаунте или проекте id получают PERMISSION_DENIED.
 func (s *Server) DenyScope(id string) {
 	s.mu.Lock()
@@ -165,6 +178,15 @@ func (s *Server) OnIssue(f func(keyID string)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.issueHook = f
+}
+
+// OnRequest — крючок, зовущийся на каждый вызов REST-фронта ДО его
+// исполнения, с телом запроса. Им проба делает то, что в жизни случается
+// посреди вызова: удаляет CR либо меняет его spec, пока kaname заводит объект.
+func (s *Server) OnRequest(f func(method, path string, body []byte)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.requestHook = f
 }
 
 // Calls — журнал вызовов «METHOD path».
@@ -320,10 +342,20 @@ func (s *Server) Handler() http.Handler {
 				break
 			}
 		}
+		hook := s.requestHook
 		s.mu.Unlock()
 		if !ok {
 			writeStatus(w, http.StatusUnauthorized, codes.Unauthenticated, "unauthenticated")
 			return
+		}
+		if hook != nil {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				writeStatus(w, http.StatusBadRequest, codes.InvalidArgument, "unreadable body")
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			hook(r.Method, r.URL.Path, body)
 		}
 		if hit != nil {
 			writeStatus(w, runtime.HTTPStatusFromCode(hit.code), hit.code, "injected fault")
@@ -817,6 +849,12 @@ func (h *roleService) List(_ context.Context, req *iamv1.ListRolesRequest) (*iam
 	var all []*iamv1.Role
 	for _, r := range s.roles {
 		if byName && r.GetName() != name {
+			continue
+		}
+		// account_id сужает каталог до системных ролей и ролей этого аккаунта;
+		// без него видны системные и роли аккаунтов, где у вызывающего есть
+		// право чтения, — двойник считает видимыми все.
+		if req.GetAccountId() != "" && !r.GetIsSystem() && r.GetAccountId() != req.GetAccountId() {
 			continue
 		}
 		all = append(all, proto.Clone(r).(*iamv1.Role))

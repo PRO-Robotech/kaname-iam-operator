@@ -366,26 +366,43 @@ func TestListAccessBindingsByAccountQuery(t *testing.T) {
 	}
 }
 
-func TestFindRoleRequiresExactlyOne(t *testing.T) {
-	resp := `{"roles":[{"id":"r1","name":"registry.pusher","isSystem":true},{"id":"r2","name":"registry.pusher-x"}]}`
+// Роль выдачи — только системная: роль арендатора с тем же именем (её вправе
+// завести администратор аккаунта) не подменяет системную и не делает поиск
+// неоднозначным. Каждый случай меняет против законного близнеца один факт —
+// признак is_system и число ролей с именем.
+func TestFindRoleAcceptsOnlySystemRoles(t *testing.T) {
+	var resp string
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("filter") != `name = "registry.pusher"` || r.URL.Query().Get("account_id") != "acc1" {
+		if r.URL.Query().Get("filter") != `name = "registry.pusher"` {
 			writeJSON(w, 400, `{"code":3,"message":"q"}`)
 			return
 		}
 		writeJSON(w, 200, resp)
 	}))
-	role, err := c.FindRole(context.Background(), "registry.pusher", "acc1")
-	if err != nil || role.GetId() != "r1" {
-		t.Fatalf("role=%v err=%v", role, err)
+	find := func() (*iamv1.Role, error) { return c.FindRole(context.Background(), "registry.pusher", "acc1") }
+
+	// Законный близнец: одна системная роль с этим именем.
+	resp = `{"roles":[{"id":"r1","name":"registry.pusher","isSystem":true},{"id":"r2","name":"registry.pusher-x","isSystem":true}]}`
+	if role, err := find(); err != nil || role.GetId() != "r1" {
+		t.Fatalf("system role: role=%v err=%v", role, err)
+	}
+	// Только роль арендатора с тем же именем — отказ: её правила задал арендатор.
+	resp = `{"roles":[{"id":"r9","name":"registry.pusher","accountId":"acc1"}]}`
+	if role, err := find(); Classify(err) != ClassNotFound {
+		t.Errorf("tenant role accepted: role=%v err=%v", role, err)
+	}
+	// Системная и роль арендатора с тем же именем — системная, без неоднозначности.
+	resp = `{"roles":[{"id":"r1","name":"registry.pusher","isSystem":true},{"id":"r9","name":"registry.pusher","accountId":"acc1"}]}`
+	if role, err := find(); err != nil || role.GetId() != "r1" {
+		t.Errorf("system role beside a tenant namesake: role=%v err=%v", role, err)
 	}
 	resp = `{"roles":[]}`
-	if _, err := c.FindRole(context.Background(), "registry.pusher", "acc1"); Classify(err) != ClassNotFound {
+	if _, err := find(); Classify(err) != ClassNotFound {
 		t.Errorf("absent role class = %s (%v)", Classify(err), err)
 	}
-	resp = `{"roles":[{"id":"r1","name":"registry.pusher"},{"id":"r3","name":"registry.pusher"}]}`
-	if _, err := c.FindRole(context.Background(), "registry.pusher", "acc1"); Classify(err) != ClassInvalid {
-		t.Errorf("ambiguous role class = %s (%v)", Classify(err), err)
+	resp = `{"roles":[{"id":"r1","name":"registry.pusher","isSystem":true},{"id":"r3","name":"registry.pusher","isSystem":true}]}`
+	if _, err := find(); Classify(err) != ClassInvalid {
+		t.Errorf("ambiguous system role class = %s (%v)", Classify(err), err)
 	}
 }
 

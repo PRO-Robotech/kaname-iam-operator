@@ -91,6 +91,12 @@ func TestParseRefusesEachBrokenFact(t *testing.T) {
 		{"system class role outside allowed", "systemClassRoles: [registry.public.read]", "systemClassRoles: [registry.admin]", "policy.systemClassRoles"},
 		{"template without key", "robots/{name}/{key}", "robots/{name}", "{key}"},
 		{"template without namespace", "namespaces/{namespace}/apps", "namespaces/x/apps", "{namespace}"},
+		// Без кластера два кластера с общим Vault пишут в один путь.
+		{"template without cluster", "clusters/{cluster}/namespaces", "clusters/x/namespaces", "{cluster}"},
+		// Две подстановки в одном сегменте: (name=a, key=b-c) и (name=a-b, key=c)
+		// дают один путь.
+		{"two placeholders in one segment", "robots/{name}/{key}", "robots/{name}-{key}", "{name}-{key}"},
+		{"placeholder glued to a literal", "robots/{name}/{key}", "robots/r{name}/{key}", "r{name}"},
 		{"template unknown placeholder", "apps/docker-registry/{instance}", "apps/docker-registry/{tenant}", "{tenant}"},
 		{"template parent segment", "clusters/{cluster}/", "clusters/../{cluster}/", ".."},
 		{"template absolute", "pathTemplate: clusters/", "pathTemplate: /clusters/", "pathTemplate"},
