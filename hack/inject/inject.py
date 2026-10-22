@@ -64,7 +64,7 @@ INJ = [
   "func (s Summary) Verdict() error {\n", "func (s Summary) Verdict() error {\n\treturn nil\n",
   "./hack/testsummary/", "TestVerdict"),
  ("I11 vault double ignores CAS", "internal/fakes/vaultfake/vaultfake.go",
-  "\t\tif err != nil || int(want) != cur {", "\t\tif err != nil {",
+  "\t\tif err != nil || int(want) != cur {", "\t\tif err != nil || (int(want) != cur && false) {",
   "./internal/vault/", "TestContractAgainstTheFake"),
  ("I12 token cached past exp-60s", "internal/kaname/token.go",
   "now.Before(s.expires.Add(-TokenRefreshMargin))", "now.Before(s.expires)",
