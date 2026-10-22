@@ -100,6 +100,15 @@ func TestOperatorEndToEnd(t *testing.T) {
 	reserve(t, ns.Name, t1)
 	reserve(t, ns.Name, t2)
 
+	sa, cur := e2eServiceAccount(ctx, t, ns)
+	ab, abCur := e2eBinding(ctx, t, ns, t1, t2)
+	e2eDrift(ctx, t, sa, cur)
+	e2eDeletion(ctx, t, ns, sa, ab, cur, abCur)
+}
+
+// e2eServiceAccount — CR SA → учётка с метками владения и ключ в Vault.
+func e2eServiceAccount(ctx context.Context, t *testing.T, ns *corev1.Namespace) (*iamv1alpha1.ServiceAccount, *iamv1alpha1.ServiceAccount) {
+	t.Helper()
 	saName := "kio-it-" + run + "-ci"
 	sa := &iamv1alpha1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{Name: "ci", Namespace: ns.Name},
@@ -148,7 +157,12 @@ func TestOperatorEndToEnd(t *testing.T) {
 	if err != nil || len(keys) != 1 || keys[0].GetLabels()[iamv1alpha1.LabelKeyNonce] != d["nonce"] {
 		t.Fatalf("kaname keys = %v err %v (vault nonce %q)", keys, err, d["nonce"])
 	}
+	return sa, cur
+}
 
+// e2eBinding — CR AB → выдача; смена цели — новая выдача, прежняя отозвана.
+func e2eBinding(ctx context.Context, t *testing.T, ns *corev1.Namespace, t1, t2 string) (*iamv1alpha1.AccessBinding, *iamv1alpha1.AccessBinding) {
+	t.Helper()
 	ab := &iamv1alpha1.AccessBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: "ci-binding", Namespace: ns.Name},
 		Spec: iamv1alpha1.AccessBindingSpec{
@@ -197,7 +211,13 @@ func TestOperatorEndToEnd(t *testing.T) {
 	if b := binding(t, abCur.Status.ID); b.GetStatus() != iamv1.AccessBinding_ACTIVE || b.GetTarget().GetResources().GetResources()[0].GetId() != t2 {
 		t.Fatalf("new binding = %v", b)
 	}
+	return ab, abCur
+}
 
+// e2eDrift — учётка, отключённая в kaname, остаётся Drifted и не включается.
+func e2eDrift(ctx context.Context, t *testing.T, sa, cur *iamv1alpha1.ServiceAccount) {
+	t.Helper()
+	var remote iamv1.ServiceAccount
 	// Учётка, отключённая в kaname, остаётся Drifted, оператор её не включает.
 	if err := admin.mutate(ctx, http.MethodPost, "/iam/v1/serviceAccounts/"+cur.Status.ID+":disable",
 		&iamv1.DisableServiceAccountRequest{ServiceAccountId: cur.Status.ID}, nil); err != nil {
@@ -217,7 +237,13 @@ func TestOperatorEndToEnd(t *testing.T) {
 	if err := admin.do(ctx, http.MethodGet, "/iam/v1/serviceAccounts/"+cur.Status.ID, nil, &remote); err != nil || remote.GetEnabled() {
 		t.Fatalf("account re-enabled by the operator: %v %v", remote.GetEnabled(), err)
 	}
+}
 
+// e2eDeletion — удаление CR снимает выдачу, учётку, ключи и запись Vault.
+func e2eDeletion(ctx context.Context, t *testing.T, ns *corev1.Namespace, sa *iamv1alpha1.ServiceAccount, ab *iamv1alpha1.AccessBinding,
+	cur *iamv1alpha1.ServiceAccount, abCur *iamv1alpha1.AccessBinding) {
+	t.Helper()
+	var remote iamv1.ServiceAccount
 	// Удаление: выдача отозвана, учётка, ключи и запись Vault сняты.
 	saID, abID := cur.Status.ID, abCur.Status.ID
 	if err := k8s.Delete(ctx, ab); err != nil {
