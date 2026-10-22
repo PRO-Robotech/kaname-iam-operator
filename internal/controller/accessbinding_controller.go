@@ -249,10 +249,11 @@ func (p *abPass) reconcile(ctx context.Context) (ctrl.Result, error) {
 		return p.refuse(v)
 	}
 	if policy.NeedsAdmissionGuarantee(ab) {
-		v, err := policy.CheckAdmissionGuarantee(ctx, p.r.Reader, p.r.Config.Policy.AdmissionGuard, ab.CreationTimestamp.Time)
+		v, w, err := policy.CheckAdmissionGuarantee(ctx, p.r.Reader, p.r.Config.Policy.AdmissionGuard, ab)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
+		st.AdmissionWitness = w
 		if v != nil {
 			return p.refuse(v)
 		}
