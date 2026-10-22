@@ -16,11 +16,12 @@ import (
 	iamv1alpha1 "github.com/PRO-Robotech/kaname-iam-operator/api/v1alpha1"
 )
 
-// NeedsAdmissionGuarantee — несёт ли выдача субъект, допустимый только от
-// принципала платформы (user или group): решение о нём читает аннотацию
-// created-by, а её пишет клиент.
+// NeedsAdmissionGuarantee — несёт ли выдача то, что допустимо только от
+// принципала платформы (субъект user или group, цель allInScope): решение о
+// нём читает аннотацию created-by, а её пишет клиент.
 func NeedsAdmissionGuarantee(ab *iamv1alpha1.AccessBinding) bool {
-	return slices.ContainsFunc(ab.Spec.Subjects, func(s iamv1alpha1.Subject) bool { return s.User != nil || s.Group != nil })
+	return ab.Spec.Target.AllInScope != nil ||
+		slices.ContainsFunc(ab.Spec.Subjects, func(s iamv1alpha1.Subject) bool { return s.User != nil || s.Group != nil })
 }
 
 // CheckAdmissionGuarantee подтверждает, что подлинность аннотации created-by
@@ -33,20 +34,21 @@ func NeedsAdmissionGuarantee(ab *iamv1alpha1.AccessBinding) bool {
 // AccessBinding, пишет в created-by имя принципала платформы. Объект,
 // созданный, пока политики не было (снята, переустановлена), отвергается и
 // после её возвращения — подделка, прошедшая в окно, гарантией не становится.
-// Пустой names — гарантии нет вовсе, и user/group не принимаются.
+// Пустой names — гарантии нет вовсе, и не принимаются ни user/group, ни
+// цель allInScope.
 //
 // Предел гарантии: правку политики на месте (сужение matchConstraints,
 // подмена выражения) проверка не видит; её делает только тот, кому доступна
 // запись ValidatingAdmissionPolicy, то есть администратор кластера.
 func CheckAdmissionGuarantee(ctx context.Context, c client.Reader, names []string, created time.Time) (*Violation, error) {
 	if len(names) == 0 {
-		return forbidden("user and group subjects need the admission guarantee of annotation %s, and the operator configuration names no admission policy (policy.admissionGuard)", iamv1alpha1.AnnotationCreatedBy), nil
+		return forbidden("user and group subjects and an allInScope target need the admission guarantee of annotation %s, and the operator configuration names no admission policy (policy.admissionGuard)", iamv1alpha1.AnnotationCreatedBy), nil
 	}
 	for _, name := range names {
 		vap := &admissionv1.ValidatingAdmissionPolicy{}
 		if err := c.Get(ctx, client.ObjectKey{Name: name}, vap); err != nil {
 			if apierrors.IsNotFound(err) {
-				return forbidden("admission policy %s is absent: user and group subjects are not accepted without it", name), nil
+				return forbidden("admission policy %s is absent: user and group subjects and an allInScope target are not accepted without it", name), nil
 			}
 			return nil, fmt.Errorf("admission policy %s: %w", name, err)
 		}
@@ -59,7 +61,7 @@ func CheckAdmissionGuarantee(ctx context.Context, c client.Reader, names []strin
 		bnd := &admissionv1.ValidatingAdmissionPolicyBinding{}
 		if err := c.Get(ctx, client.ObjectKey{Name: name}, bnd); err != nil {
 			if apierrors.IsNotFound(err) {
-				return forbidden("admission policy binding %s is absent: user and group subjects are not accepted without it", name), nil
+				return forbidden("admission policy binding %s is absent: user and group subjects and an allInScope target are not accepted without it", name), nil
 			}
 			return nil, fmt.Errorf("admission policy binding %s: %w", name, err)
 		}

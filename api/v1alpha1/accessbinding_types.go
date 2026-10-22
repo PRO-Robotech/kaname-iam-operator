@@ -97,6 +97,7 @@ type AllInScope struct{}
 
 // Target — цель выдачи: ровно одно из двух — перечень объектов либо вся
 // область.
+// +kubebuilder:validation:XValidation:rule="has(self.resources) != has(self.allInScope)",message="exactly one of resources, allInScope must be set"
 type Target struct {
 	// Resources — объекты-цели. Каждый обязан разрешиться в объект ЭТОГО
 	// namespace по правилам конфигурации оператора.

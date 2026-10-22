@@ -212,8 +212,10 @@ func TestAllInScopeAccountGrantReachesEveryRegistryOfTheAccount(t *testing.T) {
 	// Писатель, не являющийся платформой (администратор envtest — писатель
 	// чарта), выдачи на всю область не ставит: отказ допуска.
 	err := k8s.Create(ctx, whole("whole-writer", envtestAdmin))
-	if err == nil || !apierrors.IsForbidden(err) || !strings.Contains(err.Error(), "allInScope") {
-		t.Fatalf("allInScope from a non-platform writer: %v, want an admission denial naming allInScope", err)
+	// Субъект user и цель allInScope судятся одной оградой принципала
+	// платформы; какое из двух правил назовёт отказ первым — порядок сервера.
+	if err == nil || !apierrors.IsForbidden(err) || !strings.Contains(err.Error(), "only from a platform principal") {
+		t.Fatalf("allInScope from a non-platform writer: %v, want an admission denial by the platform principal rule", err)
 	}
 
 	platform, err := as(platformUser)
@@ -257,7 +259,7 @@ func TestAllInScopeAccountGrantReachesEveryRegistryOfTheAccount(t *testing.T) {
 	}
 	eventually(t, func() error {
 		if err := k8s.Get(ctx, client.ObjectKeyFromObject(ab), &iamv1alpha1.AccessBinding{}); !apierrors.IsNotFound(err) {
-			return fmt.Errorf("CR still present: %v", err)
+			return fmt.Errorf("CR still present: %w", err)
 		}
 		return nil
 	})

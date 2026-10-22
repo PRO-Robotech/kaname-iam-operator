@@ -6,7 +6,7 @@ Kubernetes operator for kaname IAM. It reflects two namespaced custom resources 
 | Kind | kaname object | Notes |
 |---|---|---|
 | `ServiceAccount` | service account + its keys | keys are delivered to Vault KV v2; secrets never touch Kubernetes |
-| `AccessBinding` | access binding | role, subjects and scope are immutable; a target change creates a new binding before the old one is revoked |
+| `AccessBinding` | access binding | role, subjects and scope are immutable; the target is exactly one of `resources` (named objects of the CR namespace) or `allInScope: {}` (every object of the scope, including later ones); a target change creates a new binding before the old one is revoked |
 
 The operator authenticates to kaname with a **FEDERATED** key: it asks the API server
 for a fresh token of its own service account (TokenRequest, one per exchange — kaname
@@ -19,6 +19,15 @@ accepts every assertion once) and exchanges it at `POST /iam/v1/token`
   object the operator creates carries `k8s.in-cloud.io/uid` (the CR uid) and
   `k8s.in-cloud.io/cluster`. An existing object with the same name/key is adopted only
   when it carries both; otherwise the CR reports `Conflict=True` and nothing is called.
+* **Whole scope.** `target: {allInScope: {}}` grants the role on every object of the
+  scope — the namespace's account (`scope.type: iam.account`) or project — including
+  objects registered after the grant. It is a cascade, so it is accepted only from a
+  platform principal under the admission guarantee (see `policy.platformPrincipals`),
+  only with a role from `policy.allowedRoles` found among kaname **system** roles, and
+  never for a system class subject; nothing in the namespace is resolved for it. The
+  binding is adopted by its ownership labels like any other; a binding with the same
+  subjects, role, scope and `allInScope` target that does not carry them is reported as
+  `Conflict=True` and neither adopted nor revoked.
 * **Drift is reported, never undone.** An account disabled or deleted, a key or a
   binding revoked in kaname outside the operator turns the CR `Drifted=True`,
   `Ready=False`. Recovery happens once per new value of the annotation
@@ -70,7 +79,7 @@ refuses to start on an incomplete or contradictory file. Notable keys:
 | `kaname.requestedAudience` | `audience` of the exchange — the REST front audience |
 | `vault.*` | Vault address, kubernetes-auth mount and role, projected token path |
 | `policy.allowedRoles`, `systemClassRoles` | operator-side check, independent of admission; a role is looked up among **system** roles only — a tenant role of the same name is never granted |
-| `policy.platformPrincipals`, `policy.admissionGuard` | who may name user and group subjects; the author is read from `created-by`, which only admission makes authentic, so user and group subjects are accepted only while every policy in `admissionGuard` (and its binding of the same name) is installed, denies, is not narrowed and predates the CR. The chart fills `admissionGuard` when `admission.enabled`; without admission user and group subjects are refused |
+| `policy.platformPrincipals`, `policy.admissionGuard` | who may name user and group subjects and set an `allInScope` target; the author is read from `created-by`, which only admission makes authentic, so user and group subjects and `allInScope` are accepted only while every policy in `admissionGuard` (and its binding of the same name) is installed, denies, is not narrowed and predates the CR. The chart fills `admissionGuard` when `admission.enabled`; without admission they are refused |
 | `policy.targetResolvers` | how a target type resolves to an object of the CR namespace |
 | `delivery.vault.<app>` | KV v2 mount and path template (`{cluster}`, `{namespace}`, `{instance}`, `{name}`, `{key}`); `{cluster}`, `{namespace}`, `{name}`, `{key}` are required and every placeholder is a whole path segment, so two keys never share a path |
 
@@ -84,7 +93,8 @@ Tenant namespaces carry `iam.kaname.in-cloud.io/account-id` and
    ^system:serviceaccount:<ns>:kaname-iam-operator$, public_key_pem: <cluster SA signing key>,
    key_algorithm}`. kaname accepts only a public https issuer.
 2. Grants for that account: `editor` on each tenant account and `admin` on each tenant
-   project (authority to grant). Listing bindings by account must be allowed — the
+   project (authority to grant); account-scoped bindings, `allInScope` on an account
+   among them, need `admin` on the account. Listing bindings by account must be allowed — the
    operator adopts its bindings through `GET /iam/v1/accounts/{id}/accessBindings`.
 3. A Vault role bound to the operator's service account with create/read/update/delete
    on the delivery paths only.
@@ -98,7 +108,10 @@ The chart installs three `ValidatingAdmissionPolicy` objects:
   may change finalizers only. The `resync-drift` annotation is set only by a platform
   principal; `created-by`, when present, must name the creating user and is immutable.
 * **bindings** — role from `policy.allowedRoles`; system class subjects only with
-  `systemClassRoles`; user and group subjects only from `platformPrincipals`.
+  `systemClassRoles`; user and group subjects and an `allInScope` target only from
+  `platformPrincipals`. These rules judge the grant, so they apply on create and on a
+  spec change; an update that leaves the spec intact (the operator's finalizers) is
+  judged by the writers policy alone.
 * **status** — `/status` is written only by the operator and `admission.statusWriters`.
 
 The writers list is configurable so that a delivery controller (for example the

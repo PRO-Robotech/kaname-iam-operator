@@ -8,14 +8,14 @@
 // ограды держатся и тогда, когда допуск (ValidatingAdmissionPolicy) обойдён
 // или снят.
 //
-// Субъект user или group допустим только от принципала платформы, а автора
-// CR оператор знает лишь из аннотации created-by — её пишет клиент, и
-// подлинность ей даёт только допуск. Подлинного признака автора в самом
+// Субъект user или group и цель «вся область» (allInScope) допустимы только
+// от принципала платформы, а автора CR оператор знает лишь из аннотации
+// created-by — её пишет клиент, и подлинность ей даёт только допуск. Подлинного признака автора в самом
 // объекте k8s нет: managedFields тоже пишет клиент (имя менеджера полей —
 // параметр запроса). Поэтому эта ограда честно зависит от допуска, и
 // оператор сверяет саму гарантию: политики допуска стоят, отказывают и
 // существовали к моменту создания CR (CheckAdmissionGuarantee). Нет
-// гарантии — нет и выдачи user/group.
+// гарантии — нет ни выдачи user/group, ни выдачи на всю область.
 package policy
 
 import (
@@ -51,6 +51,20 @@ func Evaluate(p config.Policy, ab *iamv1alpha1.AccessBinding) *Violation {
 		return forbidden("role %q is not in the operator's allowed roles", role)
 	}
 	creator := ab.Annotations[iamv1alpha1.AnnotationCreatedBy]
+	whole := ab.Spec.Target.AllInScope != nil
+	if whole == (len(ab.Spec.Target.Resources) > 0) {
+		return forbidden("target must set exactly one of resources, allInScope")
+	}
+	if whole {
+		// Вся область — каскад на все объекты аккаунта либо проекта, включая
+		// заведённые позже: её ставит только платформа.
+		if !slices.Contains(p.PlatformPrincipals, creator) {
+			return forbidden("target: allInScope is accepted only from a platform principal (created by %q)", creator)
+		}
+		if st := ab.Spec.EffectiveScopeType(); st != iamv1alpha1.ScopeProject && st != iamv1alpha1.ScopeAccount {
+			return forbidden("target: allInScope is accepted only with scope iam.project or iam.account, not %q", st)
+		}
+	}
 	for i, s := range ab.Spec.Subjects {
 		set := 0
 		for _, present := range []bool{s.ServiceAccountRef != nil, s.User != nil, s.Group != nil, s.SystemClass != nil} {
@@ -64,6 +78,9 @@ func Evaluate(p config.Policy, ab *iamv1alpha1.AccessBinding) *Violation {
 		switch {
 		case s.SystemClass != nil && !slices.Contains(p.SystemClassRoles, role):
 			return forbidden("subjects[%d]: a system class may be bound only to roles %v, not %q", i, p.SystemClassRoles, role)
+		case s.SystemClass != nil && whole:
+			// kaname сам отвергает такую выдачу; оператор не зовёт его заведомо.
+			return forbidden("subjects[%d]: a system class is never granted allInScope; name its objects in target.resources", i)
 		case (s.User != nil || s.Group != nil) && !slices.Contains(p.PlatformPrincipals, creator):
 			return forbidden("subjects[%d]: a user or group subject is accepted only from a platform principal (created by %q)", i, creator)
 		}

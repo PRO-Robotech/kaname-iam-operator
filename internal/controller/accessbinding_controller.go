@@ -257,6 +257,8 @@ func (p *abPass) reconcile(ctx context.Context) (ctrl.Result, error) {
 			return p.refuse(v)
 		}
 	}
+	// Цель «вся область» объекта namespace не называет: подтверждать нечего,
+	// её пределы — область выдачи из аннотаций namespace.
 	v, err := policy.ResolveTargets(ctx, p.r.Reader, p.r.Mapper, p.r.Config.Policy, ab.Namespace, ab.Spec.Target.Resources)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -368,31 +370,46 @@ func (p *abPass) resolve(ctx context.Context, accountID, scopeType, scopeID stri
 		res, ferr := p.fail(err)
 		return desired{}, res, ferr, false
 	}
-	refs := make([]*iamv1.ResourceRef, 0, len(ab.Spec.Target.Resources))
-	for _, t := range ab.Spec.Target.Resources {
-		refs = append(refs, &iamv1.ResourceRef{Type: t.Type, Id: t.ID})
+	target := &iamv1.AccessTarget{Target: &iamv1.AccessTarget_AllInScope{AllInScope: &iamv1.AccessTargetAllInScope{}}}
+	if ab.Spec.Target.AllInScope == nil {
+		refs := make([]*iamv1.ResourceRef, 0, len(ab.Spec.Target.Resources))
+		for _, t := range ab.Spec.Target.Resources {
+			refs = append(refs, &iamv1.ResourceRef{Type: t.Type, Id: t.ID})
+		}
+		target = &iamv1.AccessTarget{Target: &iamv1.AccessTarget_Resources{Resources: &iamv1.AccessTargetResources{Resources: refs}}}
 	}
 	want := desired{
 		resolved: iamv1alpha1.ResolvedBinding{Subjects: resolved, RoleID: role.GetId(), ScopeType: scopeType, ScopeID: scopeID, AccountID: accountID},
 		subjects: subjects,
-		target:   &iamv1.AccessTarget{Target: &iamv1.AccessTarget_Resources{Resources: &iamv1.AccessTargetResources{Resources: refs}}},
+		target:   target,
 	}
-	want.hash = bindingHash(subjects, role.GetId(), scopeType, scopeID, refs, ab.Spec.ExpiresAt)
+	want.hash = bindingHash(subjects, role.GetId(), scopeType, scopeID, target, ab.Spec.ExpiresAt)
 	return want, ctrl.Result{}, nil, true
 }
 
-// bindingHash — отпечаток неизменяемой части выдачи kaname.
-func bindingHash(subjects []*iamv1.Subject, roleID, scopeType, scopeID string, targets []*iamv1.ResourceRef, expires *metav1.Time) string {
+// wholeScopeKey — запись цели «вся область» в отпечатке. Тип объекта kaname
+// начинается с буквы, поэтому ни один перечень объектов так не записывается.
+const wholeScopeKey = "*allInScope"
+
+// bindingHash — отпечаток неизменяемой части выдачи kaname. Цель — перечень
+// объектов либо вся область; kaname читает выдачу без перечня как выдачу на
+// всю область, и отпечаток судит так же. Запись перечня та же, что до
+// появления второй ветви: отпечатки действующих выдач не меняются.
+func bindingHash(subjects []*iamv1.Subject, roleID, scopeType, scopeID string, target *iamv1.AccessTarget, expires *metav1.Time) string {
 	subs := make([]string, 0, len(subjects))
 	for _, s := range subjects {
 		subs = append(subs, s.GetType().String()+":"+s.GetId())
 	}
 	sort.Strings(subs)
-	tgts := make([]string, 0, len(targets))
-	for _, t := range targets {
+	refs := target.GetResources().GetResources()
+	tgts := make([]string, 0, len(refs))
+	for _, t := range refs {
 		tgts = append(tgts, t.GetType()+":"+t.GetId())
 	}
 	sort.Strings(tgts)
+	if len(tgts) == 0 {
+		tgts = []string{wholeScopeKey}
+	}
 	exp := ""
 	if expires != nil {
 		exp = expires.UTC().Format(time.RFC3339)
@@ -404,13 +421,12 @@ func bindingHash(subjects []*iamv1.Subject, roleID, scopeType, scopeID string, t
 }
 
 // sameBinding — действующая ли это выдача kaname с отпечатком hash
-// неизменяемой части.
+// неизменяемой части (с целью любой из двух ветвей).
 func sameBinding(b *iamv1.AccessBinding, hash string) bool {
-	if b.GetStatus() == iamv1.AccessBinding_REVOKED || b.GetTarget().GetAllInScope() != nil {
+	if b.GetStatus() == iamv1.AccessBinding_REVOKED {
 		return false
 	}
-	return bindingHash(b.GetSubjects(), b.GetRoleId(), b.GetScopeType(), b.GetScopeId(),
-		b.GetTarget().GetResources().GetResources(), expiresOf(b)) == hash
+	return bindingHash(b.GetSubjects(), b.GetRoleId(), b.GetScopeType(), b.GetScopeId(), b.GetTarget(), expiresOf(b)) == hash
 }
 
 // expiresOf — срок выдачи kaname в той же форме, что и в spec.

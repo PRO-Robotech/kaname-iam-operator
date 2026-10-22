@@ -221,6 +221,9 @@ spec:
                     type: array
                     x-kubernetes-list-type: atomic
                 type: object
+                x-kubernetes-validations:
+                - message: exactly one of resources, allInScope must be set
+                  rule: has(self.resources) != has(self.allInScope)
             required:
             - roleRef
             - subjects

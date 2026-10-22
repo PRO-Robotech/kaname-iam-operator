@@ -83,9 +83,17 @@ if ! "${K[@]}" rollout status "deploy/$REL" --timeout=300s; then
 	"${K[@]}" logs "deploy/$REL" -c "$container" --tail=80 >&2 || true
 	fail "служба не поднялась с доставленным манифестом registry"
 fi
-census="$("${K[@]}" logs "deploy/$REL" -c "$container" 2>/dev/null | grep -m1 'перепись доставки манифестов модулей' || true)"
-printf 'it-deliver-registry: %s\n' "${census:-перепись доставки в журнале не найдена}"
-case "$census" in
-	*'"manifests_read":1'*|*'manifests_read=1'*) ;;
-	*) fail "служба не отчиталась о прочтении одного доставленного манифеста" ;;
-esac
+# Перепись доставки — в журнале пода НОВОГО выката: самый поздний под по
+# выборке выката (прежний может ещё завершаться).
+sel="$("${K[@]}" get deploy "$REL" -o 'go-template={{range $k, $v := .spec.selector.matchLabels}}{{$k}}={{$v}},{{end}}')"
+pod="$("${K[@]}" get pods -l "${sel%,}" --sort-by=.metadata.creationTimestamp -o 'jsonpath={.items[-1:].metadata.name}')"
+[ -n "$pod" ] || unmet "под выката $REL не найден (выборка ${sel%,})"
+"${K[@]}" logs "$pod" -c "$container" > "$WORK/pod.log" 2>&1 || unmet "журнал пода $pod не прочитан"
+census="$(grep -m1 'manifests_read' "$WORK/pod.log" || true)"
+if [ -z "$census" ]; then
+	tail -40 "$WORK/pod.log" >&2
+	fail "под $pod не напечатал перепись доставки манифестов (строк журнала $(wc -l < "$WORK/pod.log"))"
+fi
+printf 'it-deliver-registry: под %s: %s\n' "$pod" "$census"
+printf '%s\n' "$census" | grep -Eq 'manifests_read"?[:=]1([^0-9]|$)' \
+	|| fail "служба не отчиталась о прочтении ровно одного доставленного манифеста"

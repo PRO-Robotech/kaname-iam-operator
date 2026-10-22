@@ -63,7 +63,7 @@ func TestABAllInScopeFromThePlatformGrantsTheWholeAccount(t *testing.T) {
 	}
 	eventually(t, waitReady, func() error {
 		if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(ab), &iamv1alpha1.AccessBinding{}); !apierrors.IsNotFound(err) {
-			return fmt.Errorf("CR still present: %v", err)
+			return fmt.Errorf("CR still present: %w", err)
 		}
 		return nil
 	})

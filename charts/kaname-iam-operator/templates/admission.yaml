@@ -9,8 +9,8 @@
 {{- $classRoles := .Values.config.policy.systemClassRoles | default list }}
 # Писатели CR: перечень настраиваемый (registry-operator, онбординг, Argo CD).
 # Оператор сам меняет только финализаторы; удалять CR, кроме писателей, вправе
-# контроллер namespace и сборщик мусора. Аннотацию resync-drift и субъектов
-# user/group ставит только платформа.
+# контроллер namespace и сборщик мусора. Аннотацию resync-drift, субъектов
+# user/group и цель allInScope ставит только платформа.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -83,7 +83,11 @@ spec:
   validationActions: [Deny]
 ---
 # Выдача: роль из перечня, системный класс — только с ролями системных
-# классов, пользователь и группа — только от принципала платформы.
+# классов, пользователь, группа и цель «вся область» (allInScope) — только от
+# принципала платформы. Судится выдача, то есть spec: правка без смены spec
+# (финализаторы оператора, метки, аннотации — их судит политика писателей)
+# этими правилами не судится, иначе оператор не взял бы под финализатор и не
+# отпустил бы выдачу, которую ставит только платформа.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -98,18 +102,26 @@ spec:
         apiVersions: ["*"]
         operations: ["CREATE", "UPDATE"]
         resources: ["accessbindings"]
+  variables:
+    - name: grant
+      expression: >-
+        request.operation == 'CREATE' || object.spec != oldObject.spec
   validations:
     - expression: >-
-        object.spec.roleRef.name in {{ toJson $roles }}
+        !variables.grant || object.spec.roleRef.name in {{ toJson $roles }}
       messageExpression: "'role ' + object.spec.roleRef.name + ' is not in the allowed roles'"
       reason: Forbidden
     - expression: >-
-        !object.spec.subjects.exists(s, has(s.systemClass)) || object.spec.roleRef.name in {{ toJson $classRoles }}
+        !variables.grant || !object.spec.subjects.exists(s, has(s.systemClass)) || object.spec.roleRef.name in {{ toJson $classRoles }}
       message: "a system class subject is allowed only with a system class role"
       reason: Forbidden
     - expression: >-
-        !object.spec.subjects.exists(s, has(s.user) || has(s.group)) || request.userInfo.username in {{ toJson $platform }}
+        !variables.grant || !object.spec.subjects.exists(s, has(s.user) || has(s.group)) || request.userInfo.username in {{ toJson $platform }}
       message: "user and group subjects are accepted only from a platform principal"
+      reason: Forbidden
+    - expression: >-
+        !variables.grant || !has(object.spec.target.allInScope) || request.userInfo.username in {{ toJson $platform }}
+      message: "an allInScope target is accepted only from a platform principal"
       reason: Forbidden
 ---
 apiVersion: admissionregistration.k8s.io/v1

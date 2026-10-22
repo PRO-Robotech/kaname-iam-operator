@@ -23,6 +23,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -307,7 +308,11 @@ func TestOperatorFinalizesPlatformOnlyBindings(t *testing.T) {
 		spec := cur.DeepCopy()
 		spec.Finalizers = append(spec.Finalizers, iamv1alpha1.Finalizer)
 		spec.Spec.Labels = map[string]string{"team": "x"}
-		denied(t, op.Update(ctx, spec), "may not UPDATE")
+		// Отказывают обе политики (писателей и выдач); какая названа первой —
+		// порядок сервера, поэтому судится сам отказ.
+		if err := op.Update(ctx, spec); err == nil || !apierrors.IsForbidden(err) {
+			t.Fatalf("operator spec change on a platform-only binding: %v, want a denial", err)
+		}
 		fin := cur.DeepCopy()
 		fin.Finalizers = append(fin.Finalizers, iamv1alpha1.Finalizer)
 		admitted(t, op.Update(ctx, fin))
