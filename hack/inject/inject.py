@@ -50,8 +50,13 @@ INJ = [
  ("I16 unknown operation error details abort decoding", "internal/kaname/client.go",
   "\t\tif _, isOp := out.(*operationpb.Operation); isOp {", "\t\tif _, isOp := out.(*operationpb.Operation); isOp && false {",
   "./internal/kaname/", "TestOperationErrorWithUnknownDetailsDecodes"),
- ("I18 second replacement overwrites the pending one", "internal/controller/accessbinding_controller.go",
-  "\t\tif st.Replaced != nil {\n\t\t\treturn p.revoke(ctx, st.Replaced.ID)\n\t\t}\n\t\t// Цель", "\t\t// Цель",
+ # Прежнюю замену держат двое: отзыв до второй замены и уборка своих лишних
+ # выдач перед созданием (I20). Снятая по одному, она держится другим — поэтому
+ # инъекция роняет обоих.
+ ("I18 second replacement overwrites the pending one (both holders)", "internal/controller/accessbinding_controller.go",
+  ("\t\tif st.Replaced != nil {\n\t\t\treturn p.revoke(ctx, st.Replaced.ID)\n\t\t}\n\t\t// Цель",
+   "\t\tcase owned && (st.Replaced == nil || b.GetId() != st.Replaced.ID):"),
+  ("\t\t// Цель", "\t\tcase owned && false:"),
   "./internal/controller/", "TestABSecondTargetChangeDoesNotForgetTheReplacedBinding"),
  ("I17 chart grants less than the controller markers", "charts/kaname-iam-operator/templates/rbac.yaml",
   "    resources: [serviceaccounts/finalizers, accessbindings/finalizers]", "    resources: [serviceaccounts/finalizers]",
@@ -131,16 +136,23 @@ def main():
     for name, path, old, new, pkgs, run in INJ:
         p = os.path.join(ROOT, path)
         src = open(p).read()
-        if src.count(old) != 1:
-            print(f"{name}\t-\tNOT-APPLIED\tякорь найден {src.count(old)} раз")
+        # Свойство, у которого два держателя, роняется только обоими сразу:
+        # old и new тогда — кортежи пар, каждая со своим якорем.
+        pairs = list(zip(old, new)) if isinstance(old, tuple) else [(old, new)]
+        missing = [o for o, _ in pairs if src.count(o) != 1]
+        if missing:
+            print(f"{name}\t-\tNOT-APPLIED\tякорь найден {src.count(missing[0])} раз")
             findings += 1
             continue
+        injected = src
+        for o, n in pairs:
+            injected = injected.replace(o, n)
         rc, lines, out = go_test(pkgs, run)
         if rc != 0:
             print(f"{name}\tRED\tCONTROL-FAILED\t{(lines or [out[-200:]])[0][:200]}")
             findings += 1
             continue
-        open(p, "w").write(src.replace(old, new))
+        open(p, "w").write(injected)
         try:
             rc, lines, out = go_test(pkgs, run)
         finally:
