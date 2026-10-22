@@ -11,3 +11,4 @@ go.work
 *~
 *.kubeconfig
 .DS_Store
+__pycache__/
