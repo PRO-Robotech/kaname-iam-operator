@@ -69,6 +69,7 @@ import (
 	"github.com/PRO-Robotech/kaname-iam-operator/internal/config"
 	"github.com/PRO-Robotech/kaname-iam-operator/internal/controller"
 	"github.com/PRO-Robotech/kaname-iam-operator/internal/kaname"
+	"github.com/PRO-Robotech/kaname-iam-operator/internal/policy"
 	"github.com/PRO-Robotech/kaname-iam-operator/internal/vault"
 )
 
@@ -113,6 +114,14 @@ var (
 	vaultAPI *vaultAdmin
 	scheme   = runtime.NewScheme()
 	cleanups []func()
+	// testSeal — печать свидетельства допуска оператора проб.
+	testSeal = func() *policy.WitnessSeal {
+		s, err := policy.NewWitnessSeal(bytes.Repeat([]byte{7}, policy.WitnessKeyBytes))
+		if err != nil {
+			panic(err)
+		}
+		return s
+	}()
 )
 
 func TestMain(m *testing.M) {
@@ -544,7 +553,7 @@ func runOperator(ctx context.Context, cfg *config.Config) (stop func(), err erro
 	}
 	deps := &controller.Deps{
 		Kaname: opClient, Vault: vaultCli, Config: cfg, Recorder: &events.FakeRecorder{},
-		Clock: clock.RealClock{}, DriftInterval: 2 * time.Second, MaxConcurrentReconciles: 2,
+		Clock: clock.RealClock{}, DriftInterval: 2 * time.Second, MaxConcurrentReconciles: 2, Seal: testSeal,
 	}
 	mctx, cancel := context.WithCancel(ctx)
 	if err := controller.SetupIndexes(mctx, mgr); err != nil {

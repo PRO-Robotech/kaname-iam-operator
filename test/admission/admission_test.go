@@ -59,6 +59,14 @@ var (
 	scheme   = runtime.NewScheme()
 	rendered []*unstructured.Unstructured
 	repoRoot = filepath.Join("..", "..")
+	// seal — печать свидетельства допуска оператора проб.
+	seal = func() *policy.WitnessSeal {
+		s, err := policy.NewWitnessSeal(bytes.Repeat([]byte{7}, policy.WitnessKeyBytes))
+		if err != nil {
+			panic(err)
+		}
+		return s
+	}()
 )
 
 func TestMain(m *testing.M) {
@@ -448,6 +456,27 @@ func TestDeploymentCarriesTheFederatedEntryAndLeaderElection(t *testing.T) {
 	}
 }
 
+// witnessKeySecret — имя Secret ключа печати свидетельства из аргументов
+// оператора в Deployment чарта.
+func witnessKeySecret(t *testing.T) string {
+	t.Helper()
+	u := find("Deployment", "")
+	if u == nil {
+		t.Fatal("no Deployment rendered")
+	}
+	var d appsv1.Deployment
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &d); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range d.Spec.Template.Spec.Containers[0].Args {
+		if name, ok := strings.CutPrefix(a, "--witness-key-secret="); ok && name != "" {
+			return name
+		}
+	}
+	t.Fatal("the Deployment does not name the witness key secret (--witness-key-secret)")
+	return ""
+}
+
 func TestRBACIsNarrow(t *testing.T) {
 	u := find("Role", "-self")
 	if u == nil {
@@ -467,6 +496,28 @@ func TestRBACIsNarrow(t *testing.T) {
 	}
 	if token == nil || len(token.ResourceNames) != 1 || token.ResourceNames[0] != "kaname-iam-operator" {
 		t.Fatalf("serviceaccounts/token rule = %+v: the operator may mint a token only for itself", token)
+	}
+	// Secret своего namespace: читается только ключ печати свидетельства, тот,
+	// что называет аргумент оператора; заводить можно (create именем не
+	// сужается), читать и править прочие — нет.
+	key := witnessKeySecret(t)
+	reads := 0
+	for _, rule := range r.Rules {
+		if !slices.Contains(rule.Resources, "secrets") {
+			continue
+		}
+		for _, v := range rule.Verbs {
+			switch {
+			case v == "create":
+			case v == "get" && len(rule.ResourceNames) == 1 && rule.ResourceNames[0] == key:
+				reads++
+			default:
+				t.Errorf("Role grants %s on secrets %v: the operator reads only its witness key %s", v, rule.ResourceNames, key)
+			}
+		}
+	}
+	if reads != 1 {
+		t.Errorf("Role grants get on the witness key secret %s %d times, want once", key, reads)
 	}
 	cr := find("ClusterRole", "-manager")
 	if cr == nil {
@@ -584,7 +635,7 @@ func TestChartAdmissionGuardIsSatisfiedByItsOwnPolicies(t *testing.T) {
 		t.Fatal(err)
 	}
 	created := &iamv1alpha1.AccessBinding{ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(time.Now().Add(time.Minute)), Generation: 1}}
-	g, err := policy.CheckAdmissionGuarantee(context.Background(), admin, c.Policy, created, time.Now())
+	g, err := policy.CheckAdmissionGuarantee(context.Background(), admin, c.Policy, seal, created, time.Now())
 	if v := g.Violation; err != nil || v != nil {
 		t.Fatalf("the operator refuses the chart's own admission policies: %v %v", v, err)
 	}
@@ -661,7 +712,7 @@ func TestChartValuesUpgradeKeepsAPermissibleBinding(t *testing.T) {
 		if v := policy.Evaluate(c.Policy, ab); v != nil {
 			return v, ab.Status.AdmissionWitness
 		}
-		g, err := policy.CheckAdmissionGuarantee(ctx, admin, c.Policy, ab, now)
+		g, err := policy.CheckAdmissionGuarantee(ctx, admin, c.Policy, seal, ab, now)
 		if err != nil {
 			t.Fatal(err)
 		}

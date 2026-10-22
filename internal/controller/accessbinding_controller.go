@@ -409,25 +409,33 @@ func (p *abPass) reconcile(ctx context.Context) (ctrl.Result, error) {
 //
 // Свидетельство допуска проход пишет в status с первого прохода, когда
 // перечень policy.admissionGuard не пуст, — и тогда, когда выдаче гарантия не
-// нужна: иначе правку политики на месте до того, как выдача перешла на цель
-// «вся область», оператор не отличил бы от политики, стоявшей всегда. Отказ
-// гарантии запрещает только выдачу, которой она нужна.
+// нужна либо её отказывает политика оператора (Evaluate): иначе правку
+// политики на месте до того, как выдача перешла на цель «вся область» или на
+// допустимый spec, оператор не отличил бы от политики, стоявшей всегда.
+// Отказ гарантии запрещает только выдачу, которой она нужна; отказ политики
+// оператора — первым.
 func (p *abPass) judge(ctx context.Context) (forbid, pending *policy.Violation, err error) {
 	ab := p.ab
-	if v := policy.Evaluate(p.r.Config.Policy, ab); v != nil {
-		return v, nil, nil
-	}
+	refused := policy.Evaluate(p.r.Config.Policy, ab)
 	if needs := policy.NeedsAdmissionGuarantee(ab); needs || len(p.r.Config.Policy.AdmissionGuard) > 0 {
-		g, err := policy.CheckAdmissionGuarantee(ctx, p.r.Reader, p.r.Config.Policy, ab, p.now())
-		if err != nil {
+		g, err := policy.CheckAdmissionGuarantee(ctx, p.r.Reader, p.r.Config.Policy, p.r.Seal, ab, p.now())
+		switch {
+		case err != nil && refused != nil:
+			// Запрещённую выдачу отзывает отказ политики оператора, и сбой
+			// чтения политик допуска этого не откладывает.
+			return refused, nil, nil
+		case err != nil:
 			return nil, nil, err
 		}
 		ab.Status.AdmissionWitness = g.Witness
 		p.recheck = g.RecheckAfter
 		p.observeRewitness(g)
-		if g.Violation != nil && needs {
+		if refused == nil && g.Violation != nil && needs {
 			return g.Violation, nil, nil
 		}
+	}
+	if refused != nil {
+		return refused, nil, nil
 	}
 	v, err := policy.ResolveTargets(ctx, p.r.Reader, p.r.Mapper, p.r.Config.Policy, ab.Namespace, ab.Spec.Target.Resources)
 	if err != nil {

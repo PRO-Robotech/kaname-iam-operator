@@ -1,6 +1,7 @@
 # Права оператора в кластере: свои CR, namespace (аннотации аккаунта и
 # проекта), события и чтение объектов-целей выдач по правилам конфигурации.
-# Secret кластера оператор не читает.
+# Secret кластера оператор не читает; в своём namespace — только Secret ключа
+# печати свидетельства допуска (Role ниже).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -52,7 +53,8 @@ subjects:
     name: {{ .Values.serviceAccount.name }}
     namespace: {{ .Release.Namespace }}
 ---
-# Права в своём namespace: Lease лидера и токен СОБСТВЕННОГО SA (FEDERATED-вход).
+# Права в своём namespace: Lease лидера, токен СОБСТВЕННОГО SA (FEDERATED-вход)
+# и ключ печати свидетельства допуска.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -72,6 +74,17 @@ rules:
   - apiGroups: [""]
     resources: [events]
     verbs: [create, patch]
+  # Ключ печати свидетельства допуска: доверие свидетельству в status держит
+  # он, а не status. Заводится оператором при первом старте; create именем не
+  # сужается (так устроен RBAC), но читать оператор может только Secret с этим
+  # именем — заведённый под другим именем ему не прочесть.
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [{{ include "kio.witnessKeySecret" . | quote }}]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

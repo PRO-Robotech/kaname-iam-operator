@@ -5,6 +5,7 @@ package policy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -49,7 +50,7 @@ type Guarantee struct {
 // стоят в кластере, отказывают (failurePolicy Fail, validationActions Deny),
 // не сужены параметрами и выборками и исполнялись — той же версией — уже
 // тогда, когда записан текущий spec объекта (его последняя смена, поколение
-// ab.Generation). now — часы оператора.
+// ab.Generation). seal — печать оператора; now — часы оператора.
 //
 // Без этого аннотация — слово клиента: тот, кто вправе писать AccessBinding,
 // пишет в created-by имя принципала платформы, а смену spec, пока политик
@@ -64,9 +65,10 @@ type Guarantee struct {
 // периодически (раз в секунду), каждый экземпляр — со своим отставанием, а
 // оператор читает их мимо него. Поэтому версия, впервые увиденная оператором,
 // вступает в силу по истечении p.AdmissionEnforcementDelay от первой встречи
-// с ней: до того её запись несёт pendingSince и не доказывает ни одного
-// поколения spec, а значение rewitness при ней не исполняется. Первый проход
-// после срока снимает pendingSince и ставит записи текущее поколение — со
+// с ней: до того её запись несёт pendingSince (момент встречи, округлённый
+// вверх до секунды — с такой точностью его хранит k8s) и не доказывает ни
+// одного поколения spec, а значение rewitness при ней не исполняется. Первый
+// проход после срока снимает pendingSince и ставит записи текущее поколение — со
 // следующей смены spec запись его доказывает. Политика старше объекта, только
 // если создана раньше него больше чем на срок и секунду (точность отметок
 // времени k8s — секунда; равные отметки старшинства не доказывают).
@@ -91,8 +93,24 @@ type Guarantee struct {
 // политики на месте (смена values чарта) подтверждённый spec не отзывает: он
 // записан при прежней версии, которая тогда исполнялась, а смены spec и
 // created-by после правки подтверждение не покрывает. Переустановку, снятие
-// и отказ политики подтверждение не переживает: пока политики не было,
-// status, где оно лежит, мог писать кто угодно.
+// и отказ политики подтверждение не переживает: выдачу после них заново
+// подтверждает смена spec при стоящих в силе политиках либо rewitness
+// платформы.
+//
+// Источник доверия — печать оператора (seal), а не status. Свидетельство
+// лежит в status, и status держит политика status из того же перечня, но
+// держит не всегда. Окно — от переустановки политики status (новый uid) до
+// p.AdmissionEnforcementDelay после первой встречи оператора с новой
+// версией: как и прочие политики, она до того может не исполняться; снятая
+// или правленная в пропускающую не держит status вовсе. В эти окна status
+// пишет любой, кому RBAC даёт accessbindings/status. Поэтому свидетельство
+// читается, только если несёт печать: HMAC по uid объекта и всему его
+// содержимому на ключе из Secret в namespace оператора (WitnessSeal) — ключ
+// писателям CR и status недоступен.
+// Свидетельство без верной печати (записанное не оператором, запись
+// оператора о другом объекте, ключ сменён) читается как его отсутствие:
+// гарантию тогда держат только политики старше объекта, отказ —
+// fail-closed. Каждое записанное свидетельство несёт печать.
 //
 // Записи политик, не названных в перечне, не трогаются: смена состава перечня
 // не переписывает свидетельство прочих политик. Запись снятой политики
@@ -106,21 +124,32 @@ type Guarantee struct {
 //
 // Предел гарантии. (1) Правку на месте политики, старшей объекта, между
 // созданием объекта и первым проходом оператора по нему (свидетельство
-// пишется с первого прохода и тогда, когда выдаче гарантия не нужна)
-// старшинство политики не отличает. (2) Срок вступления в силу держит, только
-// пока он не короче настоящего отставания каждого экземпляра kube-apiserver
-// и расхождения часов реплик оператора при смене лидера. (3) status держит
-// политика status, и правка её на месте, допустившая других писателей,
-// делает их слово свидетельством. (4) Политика судится по устройству
-// (наличие, отказ, охват), а не по содержанию выражений.
-func CheckAdmissionGuarantee(ctx context.Context, c client.Reader, p config.Policy, ab *iamv1alpha1.AccessBinding, now time.Time) (Guarantee, error) {
+// пишется с первого прохода и тогда, когда выдаче гарантия не нужна либо её
+// отказывает политика оператора) старшинство политики не отличает; то же —
+// после того, как свидетельство снято: снять его может писатель status в
+// окно политики status, а отсутствие печатью не удостоверяется. (2) Срок
+// вступления в силу держит, только пока он не короче настоящего отставания
+// каждого экземпляра kube-apiserver и расхождения часов реплик оператора при
+// смене лидера. (3) Печать держит, пока ключ знает один оператор: кто читает
+// Secret ключа, тот печать подделывает. Прежнюю запись оператора о том же
+// объекте, возвращённую в status в окно политики status, печать от нынешней
+// не отличает; но в такое окно стоящая версия политики status отличается от
+// записанной там (переустановка, правка) либо не отказывает, и прежняя запись
+// доказывает не больше, чем доказывала.
+// (4) Политика судится по устройству (наличие, отказ, охват), а не по
+// содержанию выражений.
+func CheckAdmissionGuarantee(ctx context.Context, c client.Reader, p config.Policy, seal *WitnessSeal, ab *iamv1alpha1.AccessBinding, now time.Time) (Guarantee, error) {
 	names := p.AdmissionGuard
 	if len(names) == 0 {
 		return Guarantee{Violation: lost("user and group subjects and an allInScope target need the admission guarantee of annotation %s, and the operator configuration names no admission policy (policy.admissionGuard)", iamv1alpha1.AnnotationCreatedBy)}, nil
 	}
+	if seal == nil {
+		return Guarantee{}, errors.New("admission witness seal is not configured")
+	}
 	createdBy := ab.Annotations[iamv1alpha1.AnnotationCreatedBy]
 	w := ab.Status.AdmissionWitness
-	if w == nil {
+	distrusted := w != nil && !seal.verify(ab.UID, w)
+	if w == nil || distrusted {
 		w = &iamv1alpha1.AdmissionWitness{}
 	}
 	accounted, confirmedGen, confirmedBy := w.RewitnessNonce, w.ConfirmedGeneration, w.ConfirmedCreatedBy
@@ -183,10 +212,14 @@ func CheckAdmissionGuarantee(ctx context.Context, c client.Reader, p config.Poli
 	if len(next) > 0 || accounted != "" || confirmedGen != 0 {
 		g.Witness = &iamv1alpha1.AdmissionWitness{Policies: next, RewitnessNonce: accounted,
 			ConfirmedGeneration: confirmedGen, ConfirmedCreatedBy: confirmedBy}
+		g.Witness.Seal = seal.sign(ab.UID, g.Witness)
 	}
 	g.Violation = bad
 	if g.Violation == nil {
 		g.Violation = late
+	}
+	if distrusted && g.Violation != nil {
+		g.Violation.Message += "; status.admissionWitness carries no valid seal of this operator and was read as absent"
 	}
 	return g, nil
 }
@@ -217,7 +250,7 @@ func (s *sweep) judge(name string, vap *admissionv1.ValidatingAdmissionPolicy, b
 	prev iamv1alpha1.AdmissionPolicyUIDs, seen bool) (iamv1alpha1.AdmissionPolicyUIDs, *Violation) {
 	live := iamv1alpha1.AdmissionPolicyUIDs{Name: name, PolicyUID: vap.UID, PolicyGeneration: vap.Generation,
 		BindingUID: bnd.UID, BindingGeneration: bnd.Generation, Generation: s.gen}
-	seenNow := metav1.NewTime(s.now)
+	seenNow := sightMark(s.now)
 	switch {
 	case seen && sameVersion(prev, live) && prev.PendingSince != nil:
 		s.inForce = false
@@ -240,7 +273,7 @@ func (s *sweep) judge(name string, vap *admissionv1.ValidatingAdmissionPolicy, b
 		s.inForce = false
 		s.reinstalled = s.reinstalled || prev.PolicyUID != live.PolicyUID || prev.BindingUID != live.BindingUID
 		live.PendingSince = &seenNow
-		s.wait(s.now)
+		s.wait(seenNow.Time)
 		return live, changedSince(prev, live, s.gen)
 	}
 	s.inForce = false
@@ -257,8 +290,20 @@ func (s *sweep) judge(name string, vap *admissionv1.ValidatingAdmissionPolicy, b
 		return live, nil
 	}
 	live.PendingSince = &seenNow
-	s.wait(s.now)
+	s.wait(seenNow.Time)
 	return live, why
+}
+
+// sightMark — отметка первой встречи с версией политики в момент now. k8s
+// хранит время в status с точностью до секунды и доли отбрасывает: отметка
+// округляется вверх, чтобы срок вступления в силу, отсчитанный от прочитанной
+// обратно отметки, не начинался раньше настоящей встречи.
+func sightMark(now time.Time) metav1.Time {
+	t := now.Truncate(time.Second)
+	if t.Before(now) {
+		t = t.Add(time.Second)
+	}
+	return metav1.NewTime(t)
 }
 
 // predates — создан ли объект с отметкой policy раньше объекта с отметкой

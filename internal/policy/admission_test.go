@@ -73,8 +73,13 @@ func seen(gen int64, names ...string) *iamv1alpha1.AdmissionWitness {
 	return w
 }
 
-// binding — объект поколения gen, созданный в created, со свидетельством w.
+// binding — объект поколения gen, созданный в created, со свидетельством w,
+// записанным оператором: с его печатью.
 func binding(created time.Time, gen int64, w *iamv1alpha1.AdmissionWitness) *iamv1alpha1.AccessBinding {
+	if w != nil {
+		w = w.DeepCopy()
+		w.Seal = testSeal.sign("", w)
+	}
 	return &iamv1alpha1.AccessBinding{
 		ObjectMeta: metav1.ObjectMeta{CreationTimestamp: metav1.NewTime(created), Generation: gen},
 		Status:     iamv1alpha1.AccessBindingStatus{AdmissionWitness: w},
@@ -144,7 +149,7 @@ func refused(t *testing.T, g Guarantee, err error, want string) {
 
 // checkAt — сверка в момент now.
 func checkAt(objs []client.Object, names []string, ab *iamv1alpha1.AccessBinding, now time.Time) (Guarantee, error) {
-	return CheckAdmissionGuarantee(context.Background(), guardClient(objs), guardPolicy(names), ab, now)
+	return CheckAdmissionGuarantee(context.Background(), guardClient(objs), guardPolicy(names), testSeal, ab, now)
 }
 
 // check — сверка в farNow.
@@ -495,7 +500,7 @@ func TestAdmissionGuaranteeWaitsUntilThePolicyTakesEffect(t *testing.T) {
 		now := installed.Add(600 * time.Millisecond)
 		g, err := checkAt(objs, guardNames, binding(created, 6, first.Witness), now)
 		refused(t, g, err, "admissionEnforcementDelay")
-		if want := seenAt.Add(delay).Sub(now); g.RecheckAfter != want {
+		if want := sightMark(seenAt).Add(delay).Sub(now); g.RecheckAfter != want {
 			t.Fatalf("recheck after %s, want %s: the version takes effect then", g.RecheckAfter, want)
 		}
 	})
@@ -509,7 +514,7 @@ func TestAdmissionGuaranteeWaitsUntilThePolicyTakesEffect(t *testing.T) {
 	// Близнецы P1 и P2: проход после срока закрепляет записи при текущем
 	// поколении (оно само не доказано); смена spec и значение rewitness после
 	// него — при действующей политике.
-	settled, err := checkAt(objs, guardNames, binding(created, 5, first.Witness), seenAt.Add(delay))
+	settled, err := checkAt(objs, guardNames, binding(created, 5, first.Witness), sightMark(seenAt).Add(delay))
 	refused(t, settled, err, "installed or changed after")
 	for _, p := range settled.Witness.Policies {
 		if p.PendingSince != nil || p.Generation != 5 {

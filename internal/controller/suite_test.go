@@ -4,6 +4,7 @@
 package controller
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -39,6 +40,7 @@ import (
 	"github.com/PRO-Robotech/kaname-iam-operator/internal/fakes/kanamefake"
 	"github.com/PRO-Robotech/kaname-iam-operator/internal/fakes/vaultfake"
 	"github.com/PRO-Robotech/kaname-iam-operator/internal/kaname"
+	"github.com/PRO-Robotech/kaname-iam-operator/internal/policy"
 	"github.com/PRO-Robotech/kaname-iam-operator/internal/vault"
 )
 
@@ -55,6 +57,14 @@ var (
 	// recorded — события оператора пакета: пробы судят по ним то, что
 	// оператор сообщает наружу.
 	recorded = &eventLog{}
+	// testSeal — печать свидетельства допуска оператора пакета.
+	testSeal = func() *policy.WitnessSeal {
+		s, err := policy.NewWitnessSeal(bytes.Repeat([]byte{7}, policy.WitnessKeyBytes))
+		if err != nil {
+			panic(err)
+		}
+		return s
+	}()
 
 	scheme       = runtime.NewScheme()
 	kanameCli    *kaname.Client
@@ -195,7 +205,7 @@ func startOperator(cfg *config.Config) (stop func(), err error) {
 	}
 	deps := &Deps{
 		Kaname: kanameCli, Vault: vaultCli, Config: cfg, Recorder: recorded,
-		Clock: clk, DriftInterval: 500 * time.Millisecond,
+		Clock: clk, DriftInterval: 500 * time.Millisecond, Seal: testSeal,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	if err := SetupIndexes(ctx, mgr); err != nil {

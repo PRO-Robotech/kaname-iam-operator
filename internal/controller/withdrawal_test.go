@@ -543,7 +543,7 @@ func TestABWitnessWriteLosesToAConcurrentSpecChange(t *testing.T) {
 		},
 	})
 	r := &AccessBindingReconciler{Client: k8s, Mapper: k8s.RESTMapper(), Reader: reader, Deps: &Deps{
-		Kaname: kanameCli, Vault: vaultCli, Config: testCfg, Recorder: recorded, Clock: clk, DriftInterval: time.Minute,
+		Kaname: kanameCli, Vault: vaultCli, Config: testCfg, Recorder: recorded, Clock: clk, DriftInterval: time.Minute, Seal: testSeal,
 	}}
 	pass := func(i int) {
 		if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(ab)}); err != nil {

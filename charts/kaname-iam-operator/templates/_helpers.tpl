@@ -10,6 +10,9 @@
 {{- end -}}
 {{- end -}}
 
+{{/* Secret ключа печати свидетельства допуска: заводит сам оператор при первом старте. */}}
+{{- define "kio.witnessKeySecret" -}}{{ include "kio.fullname" . }}-witness-key{{- end -}}
+
 {{- define "kio.labels" -}}
 app.kubernetes.io/name: {{ include "kio.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
@@ -37,10 +40,12 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "kio.vaultCAPath" -}}/etc/kaname-iam-operator/vault-ca/{{ .Values.vaultCA.key }}{{- end -}}
 
 {{/* Политики допуска, держащие подлинность created-by и субъектов user/group
-(каждая — с привязкой того же имени), и политика status: свидетельство
-политик (status.admissionWitness), которым гарантия судится на последнюю
-смену spec, подлинно, только пока status пишет один оператор. Без допуска
-перечень пуст, и оператор субъектов user/group не принимает. */}}
+(каждая — с привязкой того же имени), и политика status: она не пускает в
+status других писателей. Подлинность свидетельства политик
+(status.admissionWitness), которым гарантия судится на последнюю смену spec,
+держит печать оператора (ключ — Secret kio.witnessKeySecret), в том числе в
+окно, пока политика status ещё не исполняется. Без допуска перечень пуст, и
+оператор субъектов user/group не принимает. */}}
 {{- define "kio.admissionGuard" -}}
 {{- if .Values.admission.enabled -}}
 {{- toYaml (list (printf "%s-writers" (include "kio.fullname" .)) (printf "%s-bindings" (include "kio.fullname" .)) (printf "%s-status" (include "kio.fullname" .))) -}}

@@ -6,6 +6,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -33,6 +34,7 @@ import (
 	"github.com/PRO-Robotech/kaname-iam-operator/internal/controller"
 	"github.com/PRO-Robotech/kaname-iam-operator/internal/kaname"
 	"github.com/PRO-Robotech/kaname-iam-operator/internal/metrics"
+	"github.com/PRO-Robotech/kaname-iam-operator/internal/policy"
 	"github.com/PRO-Robotech/kaname-iam-operator/internal/vault"
 )
 
@@ -59,6 +61,7 @@ func run() error {
 		leaderElect   bool
 		driftInterval time.Duration
 		concurrency   int
+		witnessKey    string
 	)
 	flag.StringVar(&configPath, "config", "/etc/kaname-iam-operator/config.yaml", "Operator configuration file.")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "Metrics endpoint address; 0 disables it.")
@@ -67,6 +70,8 @@ func run() error {
 	flag.BoolVar(&leaderElect, "leader-elect", true, "Run only while holding the Lease; two active replicas must not issue keys.")
 	flag.DurationVar(&driftInterval, "drift-interval", 10*time.Minute, "How often a ready object is compared with kaname.")
 	flag.IntVar(&concurrency, "max-concurrent-reconciles", 4, "Parallel reconciles per kind.")
+	flag.StringVar(&witnessKey, "witness-key-secret", "kaname-iam-operator-witness-key",
+		"Secret in the operator namespace holding the admission witness seal key; created on first start.")
 	opts := zap.Options{}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -125,6 +130,12 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("clientset: %w", err)
 	}
+	// Ключ печати свидетельства допуска — до старта контроллеров: без него
+	// свидетельству в status, которое пишет не только оператор, не доверяется.
+	seal, err := witnessSeal(clientset, podNS, witnessKey)
+	if err != nil {
+		return err
+	}
 	tokens := kaname.NewFederatedTokenSource(kaname.FederatedTokenSourceOptions{
 		TokenURL:          cfg.Kaname.TokenURL,
 		RequestedAudience: cfg.Kaname.RequestedAudience,
@@ -165,7 +176,7 @@ func run() error {
 	}
 	deps := &controller.Deps{
 		Kaname: kc, Vault: vc, Config: cfg,
-		Recorder: mgr.GetEventRecorder("kaname-iam-operator"), Clock: clock.RealClock{},
+		Recorder: mgr.GetEventRecorder("kaname-iam-operator"), Clock: clock.RealClock{}, Seal: seal,
 		DriftInterval: driftInterval, MaxConcurrentReconciles: concurrency,
 	}
 	ctx := ctrl.SetupSignalHandler()
@@ -186,6 +197,21 @@ func run() error {
 	}
 	log.Info("starting", "cluster", cfg.ClusterName, "leaderElection", leaderElect)
 	return mgr.Start(ctx)
+}
+
+// witnessSeal читает (а нет его — заводит) ключ печати свидетельства из
+// Secret name в namespace оператора.
+func witnessSeal(cs kubernetes.Interface, namespace, name string) (*policy.WitnessSeal, error) {
+	if name == "" {
+		return nil, errors.New("--witness-key-secret is empty")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	key, err := policy.LoadWitnessKey(ctx, cs.CoreV1().Secrets(namespace), name)
+	if err != nil {
+		return nil, err
+	}
+	return policy.NewWitnessSeal(key)
 }
 
 // httpClient — клиент с собственным УЦ (либо системными корнями) и TLS ≥ 1.2.
