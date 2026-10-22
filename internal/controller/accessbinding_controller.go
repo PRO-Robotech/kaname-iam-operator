@@ -285,6 +285,11 @@ func (p *abPass) reconcile(ctx context.Context) (ctrl.Result, error) {
 	}
 	p.observeResync()
 	if st.BindingHash != want.hash {
+		// Прежняя замена ещё не отозвана: сначала она, иначе её id затёрся бы
+		// и выдача осталась бы действовать без хозяина.
+		if st.Replaced != nil {
+			return p.revoke(ctx, st.Replaced.ID)
+		}
 		// Цель (как и субъекты, роль, область, срок) в kaname неизменяема:
 		// новая выдача заводится первой, прежняя отзывается после неё.
 		st.Replaced = &iamv1alpha1.ReplacedBinding{ID: st.ID}
