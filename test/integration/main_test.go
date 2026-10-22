@@ -220,7 +220,7 @@ func saSigningKeyPEM(ctx context.Context) (string, string, error) {
 		} `json:"keys"`
 	}
 	if err := json.Unmarshal(raw, &set); err != nil || len(set.Keys) == 0 {
-		return "", "", fmt.Errorf("jwks: %v (%d keys)", err, len(set.Keys))
+		return "", "", fmt.Errorf("jwks (%d keys): %w", len(set.Keys), err)
 	}
 	k := set.Keys[0]
 	b64 := func(s string) *big.Int {

@@ -34,12 +34,13 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
-	// Ответ операций удаления — google.protobuf.Empty в Any: protojson разбирает
-	// Any только по типу, зарегистрированному в процессе, поэтому клиент
-	// связывает тип сам (TestClientPackageLinksEveryOperationResponseType).
-	_ "google.golang.org/protobuf/types/known/emptypb"
-	// Детали отказа операции (ErrorInfo и соседи) — тоже Any.
+
+	// Ответ операций удаления — google.protobuf.Empty в Any, детали отказа
+	// операции (ErrorInfo и соседи) — тоже Any: protojson разбирает Any только
+	// по типу, зарегистрированному в процессе, поэтому клиент связывает эти
+	// типы сам (TestClientPackageLinksEveryOperationResponseType).
 	_ "google.golang.org/genproto/googleapis/rpc/errdetails"
+	_ "google.golang.org/protobuf/types/known/emptypb"
 )
 
 // TokenSource выдаёт токен доступа kaname.

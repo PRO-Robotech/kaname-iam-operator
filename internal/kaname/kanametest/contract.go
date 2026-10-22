@@ -61,8 +61,17 @@ func Await(ctx context.Context, t *testing.T, c *kaname.Client, op *operationpb.
 func RunContract(t *testing.T, c *kaname.Client, fx Fixture) {
 	t.Helper()
 	ctx := context.Background()
-	name := fx.NamePrefix + "-contract"
+	sa := contractServiceAccount(ctx, t, c, fx)
+	issued := contractKeys(ctx, t, c, sa)
+	contractBindings(ctx, t, c, fx, sa)
+	contractEnablement(ctx, t, c, sa)
+	contractTeardown(ctx, t, c, sa, issued)
+}
 
+// contractServiceAccount — создание, повтор имени, поиск по имени, правка.
+func contractServiceAccount(ctx context.Context, t *testing.T, c *kaname.Client, fx Fixture) *iamv1.ServiceAccount {
+	t.Helper()
+	name := fx.NamePrefix + "-contract"
 	op, err := c.CreateServiceAccount(ctx, &iamv1.CreateServiceAccountRequest{
 		AccountId: fx.AccountID, Name: name, Description: "contract probe",
 		Labels: map[string]string{"k8s.in-cloud.io/uid": "u-1", "k8s.in-cloud.io/cluster": "c1"},
@@ -112,9 +121,15 @@ func RunContract(t *testing.T, c *kaname.Client, fx Fixture) {
 	if err != nil || got.GetDescription() != "contract probe 2" || got.GetLabels()["team"] != "a" {
 		t.Fatalf("after update: %v %v", got, err)
 	}
+	return &sa
+}
 
+// contractKeys — выпуск SECRET, повторное чтение операции, метки ключа, отказ
+// секрета с адресатом.
+func contractKeys(ctx context.Context, t *testing.T, c *kaname.Client, sa *iamv1.ServiceAccount) *iamv1.IssueSAKeyResponse {
+	t.Helper()
 	// Ключ SECRET: секрет — в ответе выпуска, метки — на ключе.
-	op, err = c.IssueKey(ctx, &iamv1.IssueSAKeyRequest{
+	op, err := c.IssueKey(ctx, &iamv1.IssueSAKeyRequest{
 		ServiceAccountId: sa.GetId(), TtlSeconds: 3600, CredentialKind: iamv1.CredentialKind_CREDENTIAL_KIND_SECRET,
 		Labels: map[string]string{"k8s.in-cloud.io/nonce": "n-1", "k8s.in-cloud.io/key": "push"},
 	})
@@ -156,7 +171,13 @@ func RunContract(t *testing.T, c *kaname.Client, fx Fixture) {
 	if kaname.Classify(err) != kaname.ClassInvalid {
 		t.Fatalf("secret with audience: class %s (%v)", kaname.Classify(err), err)
 	}
+	return &issued
+}
 
+// contractBindings — выдача, повтор ключа выдачи, перечень по аккаунту, правка
+// меток, отзыв.
+func contractBindings(ctx context.Context, t *testing.T, c *kaname.Client, fx Fixture, sa *iamv1.ServiceAccount) {
+	t.Helper()
 	// Выдача на учётку.
 	role, err := c.FindRole(ctx, fx.RoleName, fx.AccountID)
 	if err != nil {
@@ -166,7 +187,7 @@ func RunContract(t *testing.T, c *kaname.Client, fx Fixture) {
 		Resources: []*iamv1.ResourceRef{{Type: fx.TargetType, Id: fx.TargetID}},
 	}}}
 	subj := []*iamv1.Subject{{Type: iamv1.SubjectType_SUBJECT_TYPE_SERVICE_ACCOUNT, Id: sa.GetId()}}
-	op, err = c.CreateAccessBinding(ctx, &iamv1.CreateAccessBindingRequest{
+	op, err := c.CreateAccessBinding(ctx, &iamv1.CreateAccessBindingRequest{
 		Subjects: subj, RoleId: role.GetId(), ScopeType: "iam.project", ScopeId: fx.ProjectID,
 		Target: target, Labels: map[string]string{"k8s.in-cloud.io/uid": "u-2"},
 	})
@@ -228,9 +249,13 @@ func RunContract(t *testing.T, c *kaname.Client, fx Fixture) {
 	if b, err := c.GetAccessBinding(ctx, ab.GetId()); err == nil && b.GetStatus() != iamv1.AccessBinding_REVOKED {
 		t.Fatalf("revoked binding status = %s", b.GetStatus())
 	}
+}
 
+// contractEnablement — отключение, отказ выпуска у отключённой, включение.
+func contractEnablement(ctx context.Context, t *testing.T, c *kaname.Client, sa *iamv1.ServiceAccount) {
+	t.Helper()
 	// Отключение, отказ выпуска у отключённой, включение.
-	op, err = c.DisableServiceAccount(ctx, sa.GetId())
+	op, err := c.DisableServiceAccount(ctx, sa.GetId())
 	if err != nil {
 		t.Fatalf("disable: %v", err)
 	}
@@ -254,8 +279,12 @@ func RunContract(t *testing.T, c *kaname.Client, fx Fixture) {
 	if err := Await(ctx, t, c, op, nil); err != nil {
 		t.Fatalf("enable result: %v", err)
 	}
+}
 
-	op, err = c.RevokeKey(ctx, sa.GetId(), issued.GetKeyId())
+// contractTeardown — отзыв ключа, повторный отзыв, удаление учётки.
+func contractTeardown(ctx context.Context, t *testing.T, c *kaname.Client, sa *iamv1.ServiceAccount, issued *iamv1.IssueSAKeyResponse) {
+	t.Helper()
+	op, err := c.RevokeKey(ctx, sa.GetId(), issued.GetKeyId())
 	if err != nil {
 		t.Fatalf("revoke key: %v", err)
 	}

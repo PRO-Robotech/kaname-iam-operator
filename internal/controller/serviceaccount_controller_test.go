@@ -436,7 +436,7 @@ func TestSADeletionWaitsForBindingsThenCleansEverything(t *testing.T) {
 	eventually(t, waitReady, func() error {
 		err := k8s.Get(context.Background(), client.ObjectKeyFromObject(sa), &iamv1alpha1.ServiceAccount{})
 		if !apierrors.IsNotFound(err) {
-			return fmt.Errorf("SA CR still present: %v", err)
+			return fmt.Errorf("SA CR still present: %w", err)
 		}
 		return nil
 	})
@@ -445,7 +445,7 @@ func TestSADeletionWaitsForBindingsThenCleansEverything(t *testing.T) {
 		t.Fatal("kaname account or keys survived the deletion")
 	}
 	for _, b := range fakeK.Bindings() {
-		if b.GetLabels()[iamv1alpha1.LabelOwnerUID] == string(getUID(t, ab)) && b.GetStatus() != iamv1.AccessBinding_REVOKED {
+		if b.GetLabels()[iamv1alpha1.LabelOwnerUID] == getUID(t, ab) && b.GetStatus() != iamv1.AccessBinding_REVOKED {
 			t.Fatalf("binding %s survived", b.GetId())
 		}
 	}
@@ -477,7 +477,7 @@ func TestSAOrphanDeletionLeavesKanameUntouched(t *testing.T) {
 	}
 	eventually(t, waitReady, func() error {
 		if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(sa), &iamv1alpha1.ServiceAccount{}); !apierrors.IsNotFound(err) {
-			return fmt.Errorf("still present: %v", err)
+			return fmt.Errorf("still present: %w", err)
 		}
 		return nil
 	})

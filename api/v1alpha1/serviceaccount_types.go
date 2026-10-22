@@ -236,10 +236,6 @@ type ServiceAccountList struct {
 	Items           []ServiceAccount `json:"items"`
 }
 
-func init() {
-	SchemeBuilder.Register(&ServiceAccount{}, &ServiceAccountList{})
-}
-
 // IsEnabled — включена ли учётка по spec (умолчание — да).
 func (s *ServiceAccountSpec) IsEnabled() bool {
 	return s.Enabled == nil || *s.Enabled

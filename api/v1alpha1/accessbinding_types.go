@@ -231,10 +231,6 @@ type AccessBindingList struct {
 	Items           []AccessBinding `json:"items"`
 }
 
-func init() {
-	SchemeBuilder.Register(&AccessBinding{}, &AccessBindingList{})
-}
-
 // EffectiveDeletionPolicy — политика удаления с умолчанием Delete.
 func (s *AccessBindingSpec) EffectiveDeletionPolicy() DeletionPolicy {
 	if s.DeletionPolicy == "" {

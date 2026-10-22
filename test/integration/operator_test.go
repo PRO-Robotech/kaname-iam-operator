@@ -229,7 +229,7 @@ func TestOperatorEndToEnd(t *testing.T) {
 	eventually(t, func() error {
 		for _, obj := range []client.Object{&iamv1alpha1.AccessBinding{ObjectMeta: ab.ObjectMeta}, &iamv1alpha1.ServiceAccount{ObjectMeta: sa.ObjectMeta}} {
 			if err := k8s.Get(ctx, client.ObjectKeyFromObject(obj), obj); !apierrors.IsNotFound(err) {
-				return fmt.Errorf("%s still present (%v)", obj.GetName(), err)
+				return fmt.Errorf("%s still present: %w", obj.GetName(), err)
 			}
 		}
 		return nil

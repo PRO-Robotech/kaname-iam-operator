@@ -8,17 +8,28 @@
 package v1alpha1
 
 import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"sigs.k8s.io/controller-runtime/pkg/scheme"
 )
 
 var (
 	// GroupVersion — группа и версия объектов этого пакета.
 	GroupVersion = schema.GroupVersion{Group: "iam.kaname.in-cloud.io", Version: "v1alpha1"}
 
-	// SchemeBuilder регистрирует типы пакета в схеме.
-	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion}
+	// SchemeBuilder регистрирует типы пакета в схеме. Пакет API зависит
+	// только от apimachinery: его импортируют потребители CRD.
+	SchemeBuilder = runtime.NewSchemeBuilder(addKnownTypes)
 
 	// AddToScheme добавляет типы пакета в схему.
 	AddToScheme = SchemeBuilder.AddToScheme
 )
+
+func addKnownTypes(s *runtime.Scheme) error {
+	s.AddKnownTypes(GroupVersion,
+		&ServiceAccount{}, &ServiceAccountList{},
+		&AccessBinding{}, &AccessBindingList{},
+	)
+	metav1.AddToGroupVersion(s, GroupVersion)
+	return nil
+}

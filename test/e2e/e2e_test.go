@@ -106,7 +106,7 @@ func TestInstallAndOperate(t *testing.T) {
 		eventually(t, 2*time.Minute, func() error {
 			out, err := kubectlTry("-n", ns, "get", "lease", "kaname-iam-operator.iam.kaname.in-cloud.io", "-o", "jsonpath={.spec.holderIdentity}")
 			if err != nil || strings.TrimSpace(out) == "" {
-				return fmt.Errorf("lease holder %q: %v", out, err)
+				return fmt.Errorf("lease holder %q: %w", out, err)
 			}
 			return nil
 		})
