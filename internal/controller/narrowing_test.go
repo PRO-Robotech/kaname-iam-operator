@@ -188,7 +188,7 @@ func removeAdmissionGuard(t *testing.T) {
 			}
 			eventually(t, waitReady, func() error {
 				if err := k8s.Get(ctx, client.ObjectKeyFromObject(obj), obj); !apierrors.IsNotFound(err) {
-					return fmt.Errorf("%s still present: %v", name, err)
+					return fmt.Errorf("%s still present: %w", name, err)
 				}
 				return nil
 			})
@@ -249,6 +249,12 @@ func TestABAdmissionGuaranteeIsJudgedAtTheLastSpecChange(t *testing.T) {
 	refusedForbidden(t, pos)
 	refusedForbidden(t, neg)
 
+	// Отметки времени объектов k8s — с точностью до секунды: политика,
+	// поставленная в ту же секунду, что и CR, не была бы моложе него, и проба
+	// мерила бы не то.
+	for _, ab := range []*iamv1alpha1.AccessBinding{pos, neg} {
+		time.Sleep(time.Until(getAB(t, ab).CreationTimestamp.Add(time.Second + 100*time.Millisecond)))
+	}
 	installAdmissionGuard(t)
 	touch(t, pos)
 	touch(t, neg)
