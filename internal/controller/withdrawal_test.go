@@ -261,13 +261,14 @@ func TestABWitnessIsKeptBeforeTheBindingNeedsTheGuarantee(t *testing.T) {
 	tn := newTenant(t, true)
 	reserve(t, tn, "abc123")
 	readySA(t, tn, "zot-early")
-	named := func(name string) *iamv1alpha1.AccessBinding {
-		ab := newAB(tn, name, "zot-early", "registry.pusher", "abc123")
+	// Роли разные: одинаковые выдачи одной учётке были бы одним ключом kaname.
+	named := func(name, role string) *iamv1alpha1.AccessBinding {
+		ab := newAB(tn, name, "zot-early", role, "abc123")
 		ab.Annotations = map[string]string{iamv1alpha1.AnnotationCreatedBy: platformPrincipal}
 		ab.Spec.Scope.Type = iamv1alpha1.ScopeAccount
 		return ab
 	}
-	early, twin := named("witness-early"), named("witness-early-twin")
+	early, twin := named("witness-early", "registry.pusher"), named("witness-early-twin", "registry.puller")
 	createAB(t, early)
 	createAB(t, twin)
 	earlyID, twinID := waitABReady(t, early).Status.ID, waitABReady(t, twin).Status.ID
