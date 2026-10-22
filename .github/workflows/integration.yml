@@ -161,7 +161,6 @@ jobs:
           make test-integration > "$RUNNER_TEMP/integration.log" 2>&1 || rc=$?
           cat "$RUNNER_TEMP/integration.log"
           echo "integration rc=$rc"
-          grep -E '^(=== RUN|--- (PASS|FAIL|SKIP)|PASS|FAIL|ok )|residue census|NOT EXECUTED|УСЛОВИЕ НЕ СОЗДАНО' "$RUNNER_TEMP/integration.log" | tail -60 || true
           case "$rc" in
             0) ;;
             75) echo "::error title=CONDITION NOT CREATED::it-stand.sh could not create its condition — no verdict about the tree"; exit 1 ;;
