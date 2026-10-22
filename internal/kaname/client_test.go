@@ -373,13 +373,13 @@ func TestListAccessBindingsByAccountQuery(t *testing.T) {
 func TestFindRoleAcceptsOnlySystemRoles(t *testing.T) {
 	var resp string
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("filter") != `name = "registry.pusher"` {
+		if r.URL.Query().Get("filter") != `name = "registry.pusher"` || r.URL.Query().Has("account_id") {
 			writeJSON(w, 400, `{"code":3,"message":"q"}`)
 			return
 		}
 		writeJSON(w, 200, resp)
 	}))
-	find := func() (*iamv1.Role, error) { return c.FindRole(context.Background(), "registry.pusher", "acc1") }
+	find := func() (*iamv1.Role, error) { return c.FindSystemRole(context.Background(), "registry.pusher") }
 
 	// Законный близнец: одна системная роль с этим именем.
 	resp = `{"roles":[{"id":"r1","name":"registry.pusher","isSystem":true},{"id":"r2","name":"registry.pusher-x","isSystem":true}]}`

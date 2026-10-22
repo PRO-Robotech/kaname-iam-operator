@@ -12,6 +12,7 @@ import (
 	"time"
 
 	iamv1 "github.com/PRO-Robotech/kaname/pkg/api/kaname/cloud/iam/v1"
+	admissionv1 "k8s.io/api/admissionregistration/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -54,7 +55,7 @@ func waitGone(t *testing.T, obj client.Object) {
 	t.Helper()
 	eventually(t, waitReady, func() error {
 		if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(obj), obj.DeepCopyObject().(client.Object)); !apierrors.IsNotFound(err) {
-			return fmt.Errorf("%s still present: %v", obj.GetName(), err)
+			return fmt.Errorf("%s still present: %w", obj.GetName(), err)
 		}
 		return nil
 	})
@@ -188,4 +189,39 @@ func TestABUserSubjectIsRefusedWithoutTheAdmissionGuarantee(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+// installAdmissionGuard ставит политики допуска, названные конфигурацией
+// пробы (policy.admissionGuard), с привязками того же имени. Выражение
+// политики пропускает всё: проба меряет сверку гарантии оператором, а не сам
+// допуск (его судят test/admission и e2e). Снимаются в конце пробы.
+func installAdmissionGuard(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	fail := admissionv1.Fail
+	for _, name := range testCfg.Policy.AdmissionGuard {
+		vap := &admissionv1.ValidatingAdmissionPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec: admissionv1.ValidatingAdmissionPolicySpec{
+				FailurePolicy: &fail,
+				MatchConstraints: &admissionv1.MatchResources{ResourceRules: []admissionv1.NamedRuleWithOperations{{
+					RuleWithOperations: admissionv1.RuleWithOperations{
+						Operations: []admissionv1.OperationType{admissionv1.Create},
+						Rule:       admissionv1.Rule{APIGroups: []string{"iam.kaname.in-cloud.io"}, APIVersions: []string{"*"}, Resources: []string{"accessbindings"}},
+					},
+				}}},
+				Validations: []admissionv1.Validation{{Expression: "true"}},
+			},
+		}
+		bnd := &admissionv1.ValidatingAdmissionPolicyBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec:       admissionv1.ValidatingAdmissionPolicyBindingSpec{PolicyName: name, ValidationActions: []admissionv1.ValidationAction{admissionv1.Deny}},
+		}
+		for _, obj := range []client.Object{vap, bnd} {
+			if err := k8s.Create(ctx, obj); err != nil {
+				t.Fatalf("install admission guard %s: %v", name, err)
+			}
+			t.Cleanup(func() { _ = k8s.Delete(context.Background(), obj) })
+		}
+	}
 }

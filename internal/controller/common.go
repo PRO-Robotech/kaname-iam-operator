@@ -17,6 +17,7 @@ import (
 
 	operationpb "github.com/PRO-Robotech/corelib/api/corelib/operation"
 	iamv1 "github.com/PRO-Robotech/kaname/pkg/api/kaname/cloud/iam/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -24,6 +25,7 @@ import (
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -52,7 +54,7 @@ type KanameAPI interface {
 	UpdateAccessBinding(ctx context.Context, req *iamv1.UpdateAccessBindingRequest) (*operationpb.Operation, error)
 	RevokeAccessBinding(ctx context.Context, id string) (*operationpb.Operation, error)
 	ListAccessBindingsByAccount(ctx context.Context, accountID string) ([]*iamv1.AccessBinding, error)
-	FindRole(ctx context.Context, name, accountID string) (*iamv1.Role, error)
+	FindSystemRole(ctx context.Context, name string) (*iamv1.Role, error)
 }
 
 // VaultAPI — то из клиента Vault, чем пользуется протокол ключей.
@@ -202,6 +204,25 @@ func (o outcome) result() (ctrl.Result, error) {
 }
 
 func isConflict(err error) bool { return apierrors.IsConflict(err) }
+
+// deletionAccounts — аккаунты, где удаление ищет объект kaname, чей id не
+// дошёл до status: записанный в status (намерение) и аккаунт namespace, если
+// он другой. Namespace уже снят — остаётся только status.
+func deletionAccounts(ctx context.Context, c client.Reader, namespace, recorded string) ([]string, error) {
+	var out []string
+	if recorded != "" {
+		out = append(out, recorded)
+	}
+	ns := &corev1.Namespace{}
+	err := c.Get(ctx, client.ObjectKey{Name: namespace}, ns)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return nil, err
+	}
+	if acc := ns.Annotations[iamv1alpha1.AnnotationAccountID]; err == nil && acc != "" && acc != recorded {
+		out = append(out, acc)
+	}
+	return out, nil
+}
 
 // newPending — запись операции, запущенной сейчас.
 func newPending(op *operationpb.Operation, verb iamv1alpha1.OperationVerb, subject string, now time.Time) *iamv1alpha1.PendingOperation {

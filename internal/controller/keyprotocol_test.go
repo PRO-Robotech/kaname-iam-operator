@@ -209,6 +209,7 @@ func TestKeyProtocolFinishesFromVaultAfterACrashBeforeStatus(t *testing.T) {
 	_, ver := h.v.Get(vaultMount, h.path())
 	h.v.Put(vaultMount, h.path(), map[string]string{
 		vaultUsername: k, vaultKeyID: k, vaultPassword: "kacho_x", vaultSAID: sa.Status.ID, vaultNonce: "n-crash",
+		vaultOwnerUID: "uid-zot-ci", vaultCluster: clusterName, vaultKeyName: "push",
 	})
 	h.setStatus(t, func(st *iamv1alpha1.ServiceAccountStatus) {
 		st.Keys[0].Issuing = &iamv1alpha1.KeyIssuing{Nonce: "n-crash", At: metav1.NewTime(h.clk.Now())}
@@ -411,7 +412,7 @@ func TestKeyProtocolVaultFailureAfterIssueConverges(t *testing.T) {
 func foreignRecord() map[string]string {
 	return map[string]string{
 		vaultUsername: "sak-other", vaultKeyID: "sak-other", vaultPassword: "kacho_other", vaultSAID: "sva-other",
-		vaultNonce: "n-other", "ownerUid": "uid-other", "cluster": "c2", "keyName": "push",
+		vaultNonce: "n-other", vaultOwnerUID: "uid-other", vaultCluster: "c2", vaultKeyName: "push",
 	}
 }
 

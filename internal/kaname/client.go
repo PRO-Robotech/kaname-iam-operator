@@ -294,21 +294,22 @@ func (c *Client) ListAccessBindingsByAccount(ctx context.Context, accountID stri
 	return out, err
 }
 
-// FindRole ищет роль по имени в каталоге аккаунта (системные + свои);
-// ровно одно совпадение, иначе отказ.
-func (c *Client) FindRole(ctx context.Context, name, accountID string) (*iamv1.Role, error) {
+// FindSystemRole ищет СИСТЕМНУЮ роль по имени; ровно одно совпадение, иначе
+// отказ. Роль арендатора (is_system=false) не принимается, даже если её имя
+// совпадает с системной: её правила задаёт администратор аккаунта, а оператор
+// выдаёт только роли из закрытого перечня allowedRoles, чьи правила задал
+// манифест платформы. Каталог без account_id отдаёт системные роли и роли
+// аккаунтов, видимые вызывающему, — поэтому признак проверяется у каждой.
+func (c *Client) FindSystemRole(ctx context.Context, name string) (*iamv1.Role, error) {
 	const op = "Roles.List"
 	q := url.Values{}
 	q.Set("filter", fmt.Sprintf("name = %s", strconv.Quote(name)))
-	if accountID != "" {
-		q.Set("account_id", accountID)
-	}
 	var matches []*iamv1.Role
 	err := c.list(ctx, op, "/iam/v1/roles", q, func() proto.Message { return &iamv1.ListRolesResponse{} },
 		func(m proto.Message) string {
 			resp := m.(*iamv1.ListRolesResponse)
 			for _, r := range resp.GetRoles() {
-				if r.GetName() == name {
+				if r.GetName() == name && r.GetIsSystem() {
 					matches = append(matches, r)
 				}
 			}
@@ -319,11 +320,11 @@ func (c *Client) FindRole(ctx context.Context, name, accountID string) (*iamv1.R
 	}
 	switch len(matches) {
 	case 0:
-		return nil, &Error{Op: op, Code: codes.NotFound, Message: fmt.Sprintf("role %q not found", name)}
+		return nil, &Error{Op: op, Code: codes.NotFound, Message: fmt.Sprintf("system role %q not found", name)}
 	case 1:
 		return matches[0], nil
 	default:
-		return nil, &Error{Op: op, Code: codes.InvalidArgument, Message: fmt.Sprintf("role name %q is ambiguous: %d roles carry it", name, len(matches))}
+		return nil, &Error{Op: op, Code: codes.InvalidArgument, Message: fmt.Sprintf("system role name %q is ambiguous: %d roles carry it", name, len(matches))}
 	}
 }
 

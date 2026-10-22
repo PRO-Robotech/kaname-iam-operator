@@ -116,7 +116,8 @@ type ServiceAccountSpec struct {
 	// +optional
 	Description string `json:"description,omitempty"`
 	// Enabled — включена ли учётка. Выключение зовёт `:disable`; включение
-	// после ручного отключения в kaname оператор сам НЕ делает (Drifted).
+	// после отключения по spec — `:enable`; включение после ручного
+	// отключения в kaname оператор сам НЕ делает (Drifted).
 	// +kubebuilder:default=true
 	// +optional
 	Enabled *bool `json:"enabled,omitempty"`
@@ -189,9 +190,16 @@ type ServiceAccountStatus struct {
 	// ID — id учётки в kaname (sva…).
 	// +optional
 	ID string `json:"id,omitempty"`
-	// AccountID — аккаунт kaname, в котором учётка заведена.
+	// AccountID — аккаунт kaname, в котором учётка заведена. Записывается ДО
+	// вызова создания (намерение): по нему удаление находит учётку, чей id
+	// не дошёл до status.
 	// +optional
 	AccountID string `json:"accountId,omitempty"`
+	// DisabledBySpec — учётку отключил оператор по spec.enabled=false.
+	// Пишется ДО вызова отключения; по нему включение по spec отличается от
+	// отключения мимо оператора: первое исполняется, второе — дрейф.
+	// +optional
+	DisabledBySpec bool `json:"disabledBySpec,omitempty"`
 	// PendingOperation — незавершённая операция kaname.
 	// +optional
 	PendingOperation *PendingOperation `json:"pendingOperation,omitempty"`

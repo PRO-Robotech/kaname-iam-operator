@@ -191,6 +191,7 @@ func TestABPolicyRefusalsHaveLawfulTwins(t *testing.T) {
 		}
 	})
 	t.Run("twin: user subject from a platform principal", func(t *testing.T) {
+		installAdmissionGuard(t)
 		ab := newAB(tn, "twin-user", "zot-pol", "registry.pusher", "abc123")
 		ab.Annotations = map[string]string{iamv1alpha1.AnnotationCreatedBy: "system:serviceaccount:platform-system:onboarding"}
 		ab.Spec.Subjects = []iamv1alpha1.Subject{{User: &iamv1alpha1.PrincipalRef{ID: "usr1"}}}

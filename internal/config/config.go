@@ -71,16 +71,24 @@ type Vault struct {
 	CallTimeout Duration `json:"callTimeout,omitempty"`
 }
 
-// Policy — ограждение выдач на стороне оператора (дублирует ограждение
-// допуска на случай его обхода).
+// Policy — ограждение выдач на стороне оператора. Роли, системные классы и
+// цели оно проверяет само, независимо от допуска; автора CR (субъекты
+// user/group) — только вместе с допуском (AdmissionGuard).
 type Policy struct {
 	// AllowedRoles — роли, которые разрешено выдавать.
 	AllowedRoles []string `json:"allowedRoles"`
 	// SystemClassRoles — роли, допустимые для субъектов-системных классов.
 	SystemClassRoles []string `json:"systemClassRoles,omitempty"`
 	// PlatformPrincipals — пользователи k8s, чьи CR вправе называть субъектом
-	// пользователя или группу kaname.
+	// пользователя или группу kaname. Автора CR оператор читает из аннотации
+	// created-by, подлинность которой держит допуск, — поэтому субъекты
+	// user/group принимаются только при гарантии AdmissionGuard.
 	PlatformPrincipals []string `json:"platformPrincipals,omitempty"`
+	// AdmissionGuard — имена ValidatingAdmissionPolicy (каждая с привязкой
+	// того же имени), которые держат подлинность created-by и субъектов
+	// user/group. Оператор сверяет их наличие и режим отказа на каждой такой
+	// выдаче; пусто — user/group не принимаются.
+	AdmissionGuard []string `json:"admissionGuard,omitempty"`
 	// TargetResolvers — как тип цели разрешается в объект namespace CR.
 	TargetResolvers map[string]TargetResolver `json:"targetResolvers,omitempty"`
 }
@@ -117,7 +125,8 @@ type VaultApp struct {
 	// Mount — mount KV v2.
 	Mount string `json:"mount"`
 	// PathTemplate — путь внутри mount с подстановками {cluster}, {namespace},
-	// {instance}, {name}, {key}; обязательны {namespace}, {name}, {key}.
+	// {instance}, {name}, {key}; обязательны {cluster}, {namespace}, {name},
+	// {key}, и каждая подстановка — целый сегмент пути.
 	PathTemplate string `json:"pathTemplate"`
 }
 
@@ -168,6 +177,7 @@ const (
 
 var (
 	dnsLabelRe     = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
+	dnsSubdomainRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
 	mountRe        = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
 	placeholderRe  = regexp.MustCompile(`\{[^{}]*\}`)
 	fieldPathRe    = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9]*(\.[a-zA-Z][a-zA-Z0-9]*)*$`)
@@ -178,8 +188,12 @@ var (
 // knownPlaceholders — закрытый перечень подстановок шаблона пути.
 var knownPlaceholders = []string{"{cluster}", "{namespace}", "{instance}", "{name}", "{key}"}
 
-// requiredPlaceholders — без них пути разных CR совпали бы.
-var requiredPlaceholders = []string{"{namespace}", "{name}", "{key}"}
+// requiredPlaceholders — без них пути разных CR совпали бы: {cluster} разводит
+// кластеры с общим Vault, {namespace} и {name} — CR, {key} — ключи одного CR.
+// Вместе с правилом «подстановка — целый сегмент» это делает путь
+// взаимно-однозначным с ключом CR: значение подстановки — имя без «/», и
+// граница сегмента не сдвигается никаким значением.
+var requiredPlaceholders = []string{"{cluster}", "{namespace}", "{name}", "{key}"}
 
 // Load читает файл конфигурации, применяет умолчания и проверяет её.
 func Load(file string) (*Config, error) {
@@ -293,6 +307,11 @@ func (p *Policy) validate() []error {
 			errs = append(errs, fmt.Errorf("policy.systemClassRoles: %q is not in policy.allowedRoles", r))
 		}
 	}
+	for _, n := range p.AdmissionGuard {
+		if !dnsSubdomainRe.MatchString(n) || len(n) > 253 {
+			errs = append(errs, fmt.Errorf("policy.admissionGuard: %q is not an object name", n))
+		}
+	}
 	for typ, r := range p.TargetResolvers {
 		where := fmt.Sprintf("policy.targetResolvers[%q]", typ)
 		if r.Version == "" || r.Resource == "" {
@@ -348,9 +367,23 @@ func validateTemplate(where, tpl string) []error {
 			errs = append(errs, fmt.Errorf("%s: pathTemplate must contain %s", where, ph))
 		}
 	}
+	seen := map[string]bool{}
 	for _, seg := range strings.Split(tpl, "/") {
-		lit := placeholderRe.ReplaceAllString(seg, "x")
-		if seg == "" || seg == "." || seg == ".." || !pathLiteralRe.MatchString(lit) {
+		phs := placeholderRe.FindAllString(seg, -1)
+		if len(phs) > 0 && (len(phs) != 1 || phs[0] != seg) {
+			// (name=a, key=b-c) и (name=a-b, key=c) в «{name}-{key}» дают один
+			// путь: подстановка обязана занимать сегмент целиком.
+			errs = append(errs, fmt.Errorf("%s: pathTemplate segment %q must be exactly one placeholder or a literal", where, seg))
+			continue
+		}
+		if len(phs) == 1 {
+			if seen[seg] {
+				errs = append(errs, fmt.Errorf("%s: pathTemplate repeats %s", where, seg))
+			}
+			seen[seg] = true
+			continue
+		}
+		if seg == "" || seg == "." || seg == ".." || !pathLiteralRe.MatchString(seg) {
 			errs = append(errs, fmt.Errorf("%s: pathTemplate segment %q is not allowed", where, seg))
 		}
 	}

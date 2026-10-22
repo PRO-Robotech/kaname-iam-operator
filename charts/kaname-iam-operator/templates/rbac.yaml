@@ -23,6 +23,14 @@ rules:
   - apiGroups: [iam.kaname.in-cloud.io]
     resources: [serviceaccounts/finalizers, accessbindings/finalizers]
     verbs: [update]
+  {{- if .Values.admission.enabled }}
+  # Гарантия допуска для субъектов user/group: оператор читает СВОИ политики
+  # допуска и их привязки (наличие, режим отказа, момент установки).
+  - apiGroups: [admissionregistration.k8s.io]
+    resources: [validatingadmissionpolicies, validatingadmissionpolicybindings]
+    resourceNames: {{ include "kio.admissionGuard" . | fromYamlArray | toJson }}
+    verbs: [get]
+  {{- end }}
   {{- range $type, $r := .Values.config.policy.targetResolvers }}
   - apiGroups: [{{ $r.group | quote }}]
     resources: [{{ $r.resource | quote }}]

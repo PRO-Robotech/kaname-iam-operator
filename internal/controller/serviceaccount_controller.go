@@ -287,24 +287,8 @@ func (p *saPass) reconcile(ctx context.Context) (ctrl.Result, error) {
 	p.observeResync()
 
 	wantEnabled := sa.Spec.IsEnabled()
-	switch {
-	case wantEnabled && !remote.GetEnabled():
-		if !p.resyncNow {
-			return p.drift(iamv1alpha1.ReasonDisabledExternally,
-				fmt.Sprintf("kaname account %s was disabled outside the operator", st.ID))
-		}
-		p.r.Recorder.Eventf(sa, nil, corev1.EventTypeNormal, "Resync", "Reconcile", "re-enabling kaname account %s", st.ID)
-		op, err := p.r.Kaname.EnableServiceAccount(ctx, st.ID)
-		if err != nil {
-			return p.fail(err)
-		}
-		return p.track(ctx, op, iamv1alpha1.VerbEnable, "")
-	case !wantEnabled && remote.GetEnabled():
-		op, err := p.r.Kaname.DisableServiceAccount(ctx, st.ID)
-		if err != nil {
-			return p.fail(err)
-		}
-		return p.track(ctx, op, iamv1alpha1.VerbDisable, "")
+	if res, err, proceed := p.reconcileEnabled(ctx, remote, wantEnabled); !proceed {
+		return res, err
 	}
 
 	wantLabels := desiredLabels(sa.Spec.Labels, sa, cfg.ClusterName)
@@ -356,6 +340,54 @@ func (p *saPass) reconcile(ctx context.Context) (ctrl.Result, error) {
 	return ctrl.Result{RequeueAfter: after}, nil
 }
 
+// reconcileEnabled сводит включённость учётки со spec. proceed — включённость
+// сошлась, проход идёт дальше.
+func (p *saPass) reconcileEnabled(ctx context.Context, remote *iamv1.ServiceAccount, wantEnabled bool) (ctrl.Result, error, bool) {
+	sa, st := p.sa, &p.sa.Status
+	switch {
+	case wantEnabled && !remote.GetEnabled():
+		// Отключение, записанное оператором по spec, снимается по spec;
+		// отключение мимо оператора — дрейф до resync.
+		switch {
+		case st.DisabledBySpec:
+			p.r.Recorder.Eventf(sa, nil, corev1.EventTypeNormal, "Enable", "Reconcile", "enabling kaname account %s by spec", st.ID)
+		case p.resyncNow:
+			p.r.Recorder.Eventf(sa, nil, corev1.EventTypeNormal, "Resync", "Reconcile", "re-enabling kaname account %s", st.ID)
+		default:
+			res, err := p.drift(iamv1alpha1.ReasonDisabledExternally,
+				fmt.Sprintf("kaname account %s was disabled outside the operator", st.ID))
+			return res, err, false
+		}
+		op, err := p.r.Kaname.EnableServiceAccount(ctx, st.ID)
+		if err != nil {
+			res, ferr := p.fail(err)
+			return res, ferr, false
+		}
+		res, err := p.track(ctx, op, iamv1alpha1.VerbEnable, "")
+		return res, err, false
+	case !wantEnabled && remote.GetEnabled():
+		// Намерение — до вызова: отключение, исполненное без записи признака,
+		// при включении по spec читалось бы ручным.
+		if !st.DisabledBySpec {
+			st.DisabledBySpec = true
+			if err := p.save(ctx); err != nil {
+				return ctrl.Result{}, err, false
+			}
+		}
+		op, err := p.r.Kaname.DisableServiceAccount(ctx, st.ID)
+		if err != nil {
+			res, ferr := p.fail(err)
+			return res, ferr, false
+		}
+		res, err := p.track(ctx, op, iamv1alpha1.VerbDisable, "")
+		return res, err, false
+	case wantEnabled && remote.GetEnabled():
+		// Учётка включена (оператором или мимо него): признак снят.
+		st.DisabledBySpec = false
+	}
+	return ctrl.Result{}, nil, true
+}
+
 // ensureIdentity усыновляет учётку с тем же именем, если она своя, либо
 // заводит новую. Чужая учётка с тем же именем — Conflict без вызовов.
 func (p *saPass) ensureIdentity(ctx context.Context, accountID string) (ctrl.Result, error) {
@@ -373,6 +405,12 @@ func (p *saPass) ensureIdentity(ctx context.Context, accountID string) (ctrl.Res
 		p.r.Recorder.Eventf(sa, nil, corev1.EventTypeNormal, "Adopted", "Reconcile", "adopted kaname account %s", found.GetId())
 		return ctrl.Result{RequeueAfter: requeueNow}, nil
 	}
+	// Намерение — до вызова: аккаунт в status (с проверкой resourceVersion).
+	// Учётка, чей id не дошёл до status, находится по нему и при удалении CR.
+	p.notReady(iamv1alpha1.ReasonInProgress, "creating the kaname account")
+	if err := p.save(ctx); err != nil {
+		return ctrl.Result{}, err
+	}
 	op, err := p.r.Kaname.CreateServiceAccount(ctx, &iamv1.CreateServiceAccountRequest{
 		AccountId: accountID, Name: sa.Spec.Name, Description: sa.Spec.Description,
 		Labels: desiredLabels(sa.Spec.Labels, sa, cfg.ClusterName),
@@ -383,7 +421,6 @@ func (p *saPass) ensureIdentity(ctx context.Context, accountID string) (ctrl.Res
 		}
 		return p.fail(err)
 	}
-	p.notReady(iamv1alpha1.ReasonInProgress, "creating the kaname account")
 	return p.track(ctx, op, iamv1alpha1.VerbCreate, "")
 }
 
@@ -451,6 +488,11 @@ func (p *saPass) apply(ctx context.Context, verb iamv1alpha1.OperationVerb, subj
 			return p.fail(err)
 		}
 		st.ID = ""
+	case iamv1alpha1.VerbEnable:
+		if err := kaname.OperationResult(op, nil); err != nil {
+			return p.fail(err)
+		}
+		st.DisabledBySpec = false
 	default:
 		if err := kaname.OperationResult(op, nil); err != nil {
 			return p.fail(err)
@@ -490,14 +532,22 @@ func (p *saPass) finalize(ctx context.Context) (ctrl.Result, error) {
 		return ctrl.Result{RequeueAfter: deletionBlockedRecheck}, nil
 	}
 	cfg := p.r.Config
-	if st.ID == "" && st.AccountID != "" {
-		found, err := p.r.Kaname.FindServiceAccountByName(ctx, st.AccountID, sa.Spec.Name)
+	if st.ID == "" {
+		// Учётка могла завестись, а id — не дойти до status: ищется своя по
+		// имени в аккаунте status либо, если его нет, namespace.
+		accounts, err := deletionAccounts(ctx, p.r.Client, sa.Namespace, st.AccountID)
 		if err != nil {
-			return p.fail(err)
+			return ctrl.Result{}, err
 		}
-		if found != nil && ownedBy(found.GetLabels(), string(sa.UID), cfg.ClusterName) {
-			st.ID = found.GetId()
-			return ctrl.Result{RequeueAfter: requeueNow}, nil
+		for _, acc := range accounts {
+			found, err := p.r.Kaname.FindServiceAccountByName(ctx, acc, sa.Spec.Name)
+			if err != nil {
+				return p.fail(err)
+			}
+			if found != nil && ownedBy(found.GetLabels(), string(sa.UID), cfg.ClusterName) {
+				st.ID, st.AccountID = found.GetId(), acc
+				return ctrl.Result{RequeueAfter: requeueNow}, nil
+			}
 		}
 	}
 	if st.ID != "" {

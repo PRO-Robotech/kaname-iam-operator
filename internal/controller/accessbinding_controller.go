@@ -56,6 +56,7 @@ type AccessBindingReconciler struct {
 // +kubebuilder:rbac:groups=iam.kaname.in-cloud.io,resources=accessbindings,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=iam.kaname.in-cloud.io,resources=accessbindings/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=iam.kaname.in-cloud.io,resources=accessbindings/finalizers,verbs=update
+// +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=validatingadmissionpolicies;validatingadmissionpolicybindings,verbs=get
 
 // SetupAccessBindingReconciler регистрирует контроллер AccessBinding.
 func SetupAccessBindingReconciler(mgr ctrl.Manager, d *Deps) error {
@@ -247,6 +248,15 @@ func (p *abPass) reconcile(ctx context.Context) (ctrl.Result, error) {
 	if v := policy.Evaluate(p.r.Config.Policy, ab); v != nil {
 		return p.refuse(v)
 	}
+	if policy.NeedsAdmissionGuarantee(ab) {
+		v, err := policy.CheckAdmissionGuarantee(ctx, p.r.Reader, p.r.Config.Policy.AdmissionGuard, ab.CreationTimestamp.Time)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if v != nil {
+			return p.refuse(v)
+		}
+	}
 	v, err := policy.ResolveTargets(ctx, p.r.Reader, p.r.Mapper, p.r.Config.Policy, ab.Namespace, ab.Spec.Target.Resources)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -353,7 +363,7 @@ func (p *abPass) resolve(ctx context.Context, accountID, scopeType, scopeID stri
 		resolved = append(resolved, iamv1alpha1.ResolvedSubject{Type: sub.GetType().String(), ID: sub.GetId()})
 	}
 	p.cond(iamv1alpha1.ConditionSubjectPending, metav1.ConditionFalse, iamv1alpha1.ReasonSubjectsResolved, "")
-	role, err := p.r.Kaname.FindRole(ctx, ab.Spec.RoleRef.Name, accountID)
+	role, err := p.r.Kaname.FindSystemRole(ctx, ab.Spec.RoleRef.Name)
 	if err != nil {
 		res, ferr := p.fail(err)
 		return desired{}, res, ferr, false
@@ -412,24 +422,42 @@ func expiresOf(b *iamv1.AccessBinding) *metav1.Time {
 }
 
 // ensureBinding усыновляет свою выдачу с тем же ключом либо заводит новую.
-// Чужая выдача с тем же ключом — Conflict без вызовов.
+// Чужая выдача с тем же ключом — Conflict без вызовов. Свои выдачи с другим
+// ключом, кроме прежней (Replaced), — следы создания, чей id не дошёл до
+// status: они отзываются раньше, чем заводится новая, по одной за проход.
 func (p *abPass) ensureBinding(ctx context.Context, want desired) (ctrl.Result, error) {
 	ab, st := p.ab, &p.ab.Status
 	list, err := p.r.Kaname.ListAccessBindingsByAccount(ctx, want.resolved.AccountID)
 	if err != nil {
 		return p.fail(err)
 	}
+	var adopt *iamv1.AccessBinding
 	for _, b := range list {
-		if !sameBinding(b, want) {
+		if b.GetStatus() == iamv1.AccessBinding_REVOKED {
 			continue
 		}
-		if !p.owned(b.GetLabels()) {
+		owned := p.owned(b.GetLabels())
+		switch {
+		case sameBinding(b, want) && !owned:
 			return p.conflict(fmt.Sprintf("kaname binding %s with the same subjects, role, scope and target exists and is not owned by this object", b.GetId()))
+		case sameBinding(b, want):
+			adopt = b
+		case owned && (st.Replaced == nil || b.GetId() != st.Replaced.ID):
+			p.r.Recorder.Eventf(ab, nil, corev1.EventTypeNormal, "RevokingStray", "Reconcile",
+				"revoking kaname binding %s: owned by this object but not the one it holds", b.GetId())
+			return p.revoke(ctx, b.GetId())
 		}
-		st.ID, st.BindingHash = b.GetId(), want.hash
+	}
+	if adopt != nil {
+		st.ID, st.BindingHash, st.PendingHash = adopt.GetId(), want.hash, ""
 		resolved := want.resolved
 		st.Resolved = &resolved
-		p.r.Recorder.Eventf(ab, nil, corev1.EventTypeNormal, "Adopted", "Reconcile", "adopted kaname binding %s", b.GetId())
+		// Возврат прежней цели: прежняя выдача снова действующая, отзывать её
+		// как замену — значит разорвать доступ.
+		if st.Replaced != nil && st.Replaced.ID == adopt.GetId() {
+			st.Replaced = nil
+		}
+		p.r.Recorder.Eventf(ab, nil, corev1.EventTypeNormal, "Adopted", "Reconcile", "adopted kaname binding %s", adopt.GetId())
 		return ctrl.Result{RequeueAfter: requeueNow}, nil
 	}
 	req := &iamv1.CreateAccessBindingRequest{
@@ -439,6 +467,16 @@ func (p *abPass) ensureBinding(ctx context.Context, want desired) (ctrl.Result, 
 	if ab.Spec.ExpiresAt != nil {
 		req.ExpiresAt = timestamppb.New(ab.Spec.ExpiresAt.Time)
 	}
+	// Намерение — до вызова, с проверкой resourceVersion: аккаунт выдачи и её
+	// отпечаток. Конфликт версии — выдачи нет; запись после вызова потеряна —
+	// выдача находится по меткам владения и при следующем проходе, и при
+	// удалении CR.
+	resolved := want.resolved
+	st.Resolved, st.PendingHash = &resolved, want.hash
+	p.notReady(iamv1alpha1.ReasonInProgress, "creating the kaname binding")
+	if err := p.save(ctx); err != nil {
+		return ctrl.Result{}, err
+	}
 	op, err := p.r.Kaname.CreateAccessBinding(ctx, req)
 	if err != nil {
 		if kaname.Classify(err) == kaname.ClassAlreadyExists {
@@ -446,9 +484,6 @@ func (p *abPass) ensureBinding(ctx context.Context, want desired) (ctrl.Result, 
 		}
 		return p.fail(err)
 	}
-	resolved := want.resolved
-	st.Resolved, st.PendingHash = &resolved, want.hash
-	p.notReady(iamv1alpha1.ReasonInProgress, "creating the kaname binding")
 	return p.track(ctx, op, iamv1alpha1.VerbCreate, "")
 }
 
@@ -564,9 +599,18 @@ func (p *abPass) finalize(ctx context.Context) (ctrl.Result, error) {
 	if st.ID != "" {
 		return p.revoke(ctx, st.ID)
 	}
-	// Выдача могла завестись, но не дойти до status: ищется своя по меткам.
-	if st.Resolved != nil && st.Resolved.AccountID != "" {
-		list, err := p.r.Kaname.ListAccessBindingsByAccount(ctx, st.Resolved.AccountID)
+	// Выдача могла завестись, но не дойти до status: ищется своя по меткам в
+	// аккаунте намерения и в аккаунте namespace.
+	recorded := ""
+	if st.Resolved != nil {
+		recorded = st.Resolved.AccountID
+	}
+	accounts, err := deletionAccounts(ctx, p.r.Client, ab.Namespace, recorded)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	for _, acc := range accounts {
+		list, err := p.r.Kaname.ListAccessBindingsByAccount(ctx, acc)
 		if err != nil {
 			return p.fail(err)
 		}

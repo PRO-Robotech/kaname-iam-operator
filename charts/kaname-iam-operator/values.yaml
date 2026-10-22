@@ -49,6 +49,9 @@ config:
   policy:
     allowedRoles: []
     systemClassRoles: []
+    # Субъекты user/group принимаются от этих принципалов только при
+    # гарантии допуска: policy.admissionGuard чарт заполняет сам именами своих
+    # политик, когда admission.enabled; без допуска user/group отвергаются.
     platformPrincipals: []
     # тип цели -> объект k8s, подтверждающий цель в namespace CR.
     targetResolvers: {}

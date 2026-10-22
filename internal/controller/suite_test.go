@@ -112,6 +112,7 @@ policy:
   allowedRoles: [registry.puller, registry.pusher, registry.public.read]
   systemClassRoles: [registry.public.read]
   platformPrincipals: ["system:serviceaccount:platform-system:onboarding"]
+  admissionGuard: [kio-test-writers, kio-test-bindings]
   targetResolvers:
     registry.registries:
       group: registry.in-cloud.io

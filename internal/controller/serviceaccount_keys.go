@@ -34,6 +34,10 @@ import (
 //  3. Удостоверение пишется в Vault KV v2 с CAS; запись несёт тот же nonce.
 //  4. status получает id ключа и версию записи, прежний ключ — окно перекрытия.
 //
+// Запись Vault несёт владельца (uid CR, кластер, имя ключа). Запись по пути
+// ключа с другим владельцем — чужая: оператор её не перезаписывает и не
+// удаляет, а ключ получает Conflict (NotOwned).
+//
 // Падение между любыми двумя шагами распознаётся по nonce: запись Vault с
 // нашим nonce — выпуск совершён (дочитать status); ключ kaname с нашим nonce
 // без записи Vault — секрет потерян (выждать окно уборки, выпустить заново
@@ -53,6 +57,13 @@ const (
 	vaultIssuedAt  = "issuedAt"
 	vaultPrivKey   = "privateKeyPem"
 	vaultAlgorithm = "algorithm"
+	// Владелец записи: uid CR, кластер оператора и имя ключа. Пишутся в
+	// данные той же версии, что и удостоверение, — одной записью с CAS, а не
+	// отдельной записью метаданных: падение между двумя записями оставило бы
+	// свою запись без владельца, то есть чужой.
+	vaultOwnerUID = "ownerUid"
+	vaultCluster  = "cluster"
+	vaultKeyName  = "keyName"
 	// vaultCASAttempts — повторы записи при конкурентной смене версии.
 	vaultCASAttempts = 3
 	defaultKeyTTL    = int64(2592000)
@@ -127,6 +138,22 @@ func (p *saPass) owned(labels map[string]string) bool {
 	return ownedBy(labels, string(p.sa.UID), p.r.Config.ClusterName)
 }
 
+// errRecordNotOwned — по пути ключа лежит запись другого владельца.
+var errRecordNotOwned = errors.New("the Vault record at the key path belongs to another owner")
+
+// ownsRecord — своя ли запись Vault ключа key: владелец — этот CR этого
+// кластера. Записи нет — не своя и не чужая (решает вызывающий).
+func (p *saPass) ownsRecord(rec *vault.Record, key string) bool {
+	return rec.Data[vaultOwnerUID] == string(p.sa.UID) && rec.Data[vaultCluster] == p.r.Config.ClusterName && rec.Data[vaultKeyName] == key
+}
+
+// recordConflict — ключ не ведётся: путь занят чужой записью.
+func (p *saPass) recordConflict(key, path string) (ctrl.Result, error) {
+	msg := fmt.Sprintf("key %s: Vault record %s belongs to another owner; it is neither overwritten nor deleted", key, path)
+	p.cond(iamv1alpha1.ConditionKeysReady, metav1.ConditionFalse, iamv1alpha1.ReasonNotOwned, msg)
+	return p.conflict(iamv1alpha1.ReasonNotOwned, msg)
+}
+
 func (p *saPass) failVault(err error) (ctrl.Result, error) {
 	msg := err.Error()
 	p.cond(iamv1alpha1.ConditionKeysReady, metav1.ConditionFalse, iamv1alpha1.ReasonVaultUnavailable, msg)
@@ -186,6 +213,10 @@ func (p *saPass) reconcileKey(ctx context.Context, spec iamv1alpha1.KeySpec, liv
 	rec, err := p.r.Vault.Read(ctx, mount, path)
 	if err != nil {
 		res, ferr := p.failVault(err)
+		return res, ferr, false
+	}
+	if rec != nil && !p.ownsRecord(rec, spec.Name) {
+		res, ferr := p.recordConflict(spec.Name, ks.VaultPath)
 		return res, ferr, false
 	}
 	now := p.now()
@@ -374,6 +405,9 @@ func (p *saPass) applyIssue(ctx context.Context, name string, op *operationpb.Op
 		vaultExpiresAt: expires.UTC().Format(time.RFC3339),
 		vaultNonce:     ks.Issuing.Nonce,
 		vaultIssuedAt:  p.now().UTC().Format(time.RFC3339),
+		vaultOwnerUID:  string(p.sa.UID),
+		vaultCluster:   p.r.Config.ClusterName,
+		vaultKeyName:   name,
 	}
 	if kind == iamv1alpha1.KeyKindKeypair {
 		data[vaultPrivKey] = secret
@@ -381,7 +415,11 @@ func (p *saPass) applyIssue(ctx context.Context, name string, op *operationpb.Op
 	} else {
 		data[vaultPassword] = secret
 	}
-	version, err := p.writeVault(ctx, mount, path, data)
+	version, err := p.writeVault(ctx, mount, path, name, data)
+	if errors.Is(err, errRecordNotOwned) {
+		// Ключ выпущен, а путь занят: ключ kaname с этим nonce уйдёт уборкой.
+		return p.recordConflict(name, mount+"/"+path)
+	}
 	if err != nil {
 		// Секрет не записан и больше не будет доступен: ключ kaname с этим
 		// nonce уйдёт уборкой, выпуск повторится.
@@ -397,8 +435,10 @@ func (p *saPass) applyIssue(ctx context.Context, name string, op *operationpb.Op
 }
 
 // writeVault пишет запись с CAS по последней прочитанной версии; запись уже
-// несёт наш nonce — выпуск записан раньше.
-func (p *saPass) writeVault(ctx context.Context, mount, path string, data map[string]string) (int64, error) {
+// несёт наш nonce — выпуск записан раньше. Чужая запись не перезаписывается:
+// CAS по её версии гарантирует, что между чтением владельца и записью её
+// никто не сменил.
+func (p *saPass) writeVault(ctx context.Context, mount, path, key string, data map[string]string) (int64, error) {
 	var lastErr error
 	for range vaultCASAttempts {
 		cur, err := p.r.Vault.Read(ctx, mount, path)
@@ -407,6 +447,9 @@ func (p *saPass) writeVault(ctx context.Context, mount, path string, data map[st
 		}
 		cas := int64(0)
 		if cur != nil {
+			if !p.ownsRecord(cur, key) {
+				return 0, errRecordNotOwned
+			}
 			if cur.Data[vaultNonce] == data[vaultNonce] {
 				return cur.Version, nil
 			}
@@ -476,8 +519,7 @@ func (p *saPass) dropRemovedKeys(ctx context.Context, live []*iamv1.ServiceAccou
 			}
 		}
 		if ks.VaultPath != "" {
-			mount, path, _ := strings.Cut(ks.VaultPath, "/")
-			if err := p.r.Vault.DeleteAll(ctx, mount, path); err != nil {
+			if err := p.deleteOwnRecord(ctx, ks.VaultPath, ks.Name); err != nil {
 				res, ferr := p.failVault(err)
 				return res, ferr, false
 			}
@@ -536,24 +578,43 @@ func (p *saPass) sweep(ctx context.Context, live []*iamv1.ServiceAccountOAuthCli
 	return ctrl.Result{}, nil, true
 }
 
-// deleteVaultRecords удаляет записи Vault ключей учётки (при удалении CR).
+// deleteVaultRecords удаляет СВОИ записи Vault ключей учётки (при удалении CR).
 func (p *saPass) deleteVaultRecords(ctx context.Context) error {
-	paths := map[string]bool{}
+	type ref struct{ path, key string }
+	refs := map[ref]bool{}
 	for _, ks := range p.sa.Status.Keys {
 		if ks.VaultPath != "" {
-			paths[ks.VaultPath] = true
+			refs[ref{ks.VaultPath, ks.Name}] = true
 		}
 	}
 	for _, s := range p.sa.Spec.Keys {
 		if mount, path, err := p.vaultPath(s); err == nil {
-			paths[mount+"/"+path] = true
+			refs[ref{mount + "/" + path, s.Name}] = true
 		}
 	}
-	for full := range paths {
-		mount, path, _ := strings.Cut(full, "/")
-		if err := p.r.Vault.DeleteAll(ctx, mount, path); err != nil {
+	for r := range refs {
+		if err := p.deleteOwnRecord(ctx, r.path, r.key); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// deleteOwnRecord удаляет запись mount/path, только если она своя (владелец —
+// этот CR, кластер и ключ key). Чужая запись остаётся, и об этом — событие.
+// Удаления по версии KV v2 не знает: между чтением владельца и удалением
+// окно есть, и сузить его нечем, кроме уникального пути (шаблон обязан нести
+// {cluster}, {namespace}, {name}, {key} целыми сегментами).
+func (p *saPass) deleteOwnRecord(ctx context.Context, full, key string) error {
+	mount, path, _ := strings.Cut(full, "/")
+	rec, err := p.r.Vault.Read(ctx, mount, path)
+	if err != nil || rec == nil {
+		return err
+	}
+	if !p.ownsRecord(rec, key) {
+		p.r.Recorder.Eventf(p.sa, nil, corev1.EventTypeWarning, iamv1alpha1.ReasonNotOwned, "Reconcile",
+			"key %s: Vault record %s belongs to another owner and is left in place", key, full)
+		return nil
+	}
+	return p.r.Vault.DeleteAll(ctx, mount, path)
 }

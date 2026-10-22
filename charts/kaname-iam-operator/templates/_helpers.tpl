@@ -36,6 +36,17 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "kio.kanameCAPath" -}}/etc/kaname-iam-operator/kaname-ca/{{ .Values.kanameCA.key }}{{- end -}}
 {{- define "kio.vaultCAPath" -}}/etc/kaname-iam-operator/vault-ca/{{ .Values.vaultCA.key }}{{- end -}}
 
+{{/* Политики допуска, держащие подлинность created-by и субъектов user/group
+(каждая — с привязкой того же имени). Без допуска перечень пуст, и оператор
+субъектов user/group не принимает. */}}
+{{- define "kio.admissionGuard" -}}
+{{- if .Values.admission.enabled -}}
+{{- toYaml (list (printf "%s-writers" (include "kio.fullname" .)) (printf "%s-bindings" (include "kio.fullname" .))) -}}
+{{- else -}}
+[]
+{{- end -}}
+{{- end -}}
+
 {{/* config.yaml оператора: обязательные поля — required, отказ рендера. */}}
 {{- define "kio.config" -}}
 {{- $c := .Values.config -}}
@@ -48,6 +59,8 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- if .Values.kanameCA.secretName }}{{- $_ := set $kaname "caFile" (include "kio.kanameCAPath" .) -}}{{- end -}}
 {{- $vault := dict "address" (required "config.vault.address is required" $c.vault.address) "authMount" $c.vault.authMount "role" $c.vault.role "callTimeout" $c.vault.callTimeout "tokenPath" (include "kio.vaultTokenPath" .) -}}
 {{- if .Values.vaultCA.secretName }}{{- $_ := set $vault "caFile" (include "kio.vaultCAPath" .) -}}{{- end -}}
-{{- $out := dict "clusterName" (required "config.clusterName is required" $c.clusterName) "kaname" $kaname "vault" $vault "policy" $c.policy "delivery" $c.delivery "keys" $c.keys -}}
+{{- $policy := deepCopy $c.policy -}}
+{{- $_ := set $policy "admissionGuard" (include "kio.admissionGuard" . | fromYamlArray) -}}
+{{- $out := dict "clusterName" (required "config.clusterName is required" $c.clusterName) "kaname" $kaname "vault" $vault "policy" $policy "delivery" $c.delivery "keys" $c.keys -}}
 {{- toYaml $out -}}
 {{- end -}}

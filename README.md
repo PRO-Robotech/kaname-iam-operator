@@ -23,12 +23,24 @@ accepts every assertion once) and exchanges it at `POST /iam/v1/token`
   binding revoked in kaname outside the operator turns the CR `Drifted=True`,
   `Ready=False`. Recovery happens once per new value of the annotation
   `iam.kaname.in-cloud.io/resync-drift`, which only a platform principal may set.
+  An account the operator disabled because of `spec.enabled: false` is recorded as such
+  in `status.disabledBySpec` before the call, and `spec.enabled: true` enables it again.
+* **Intent before creation.** Before creating an account or a binding the operator writes
+  its intent to `status` with a resourceVersion check (the account; for a binding also
+  its fingerprint). An object created whose id never reached `status` is found again by
+  its ownership labels: adopted on the next pass, revoked or deleted when the CR is
+  deleted (the account is taken from `status`, else from the namespace annotation), and
+  a binding owned by the CR but not the one it holds is revoked before a new one is
+  created.
 * **Key protocol.** Before issuing, the intent (nonce, time) is written to `status` with
   a resourceVersion check; the nonce goes into the key labels in kaname and into the
   Vault record; the Vault record is written with check-and-set. A crash between any two
   steps is recognised by the nonce: a Vault record with our nonce finishes the issuance,
   a kaname key with our nonce but no record (secret lost) is replaced after
   `keys.orphanGrace` and revoked. Rotation keeps the previous key for the overlap window.
+  The Vault record carries its owner (`ownerUid`, `cluster`, `keyName`) in the same
+  check-and-set write; a record at the key path with another owner is neither
+  overwritten nor deleted, and the key reports `Conflict=True` (`NotOwned`).
 * **Deletion.** `AccessBinding`: the binding is revoked. `ServiceAccount`: waits until
   no `AccessBinding` refers to it, disables the account, revokes every key, deletes the
   Vault records, deletes the account. `deletionPolicy: Orphan` removes the finalizer only.
@@ -52,9 +64,10 @@ refuses to start on an incomplete or contradictory file. Notable keys:
 | `kaname.audience` | `aud` of the assertion — the kaname issuer identifier |
 | `kaname.requestedAudience` | `audience` of the exchange — the REST front audience |
 | `vault.*` | Vault address, kubernetes-auth mount and role, projected token path |
-| `policy.allowedRoles`, `systemClassRoles`, `platformPrincipals` | operator-side duplicate of the admission policy |
+| `policy.allowedRoles`, `systemClassRoles` | operator-side check, independent of admission; a role is looked up among **system** roles only — a tenant role of the same name is never granted |
+| `policy.platformPrincipals`, `policy.admissionGuard` | who may name user and group subjects; the author is read from `created-by`, which only admission makes authentic, so user and group subjects are accepted only while every policy in `admissionGuard` (and its binding of the same name) is installed, denies, is not narrowed and predates the CR. The chart fills `admissionGuard` when `admission.enabled`; without admission user and group subjects are refused |
 | `policy.targetResolvers` | how a target type resolves to an object of the CR namespace |
-| `delivery.vault.<app>` | KV v2 mount and path template (`{cluster}`, `{namespace}`, `{instance}`, `{name}`, `{key}`) |
+| `delivery.vault.<app>` | KV v2 mount and path template (`{cluster}`, `{namespace}`, `{instance}`, `{name}`, `{key}`); `{cluster}`, `{namespace}`, `{name}`, `{key}` are required and every placeholder is a whole path segment, so two keys never share a path |
 
 Tenant namespaces carry `iam.kaname.in-cloud.io/account-id` and
 `iam.kaname.in-cloud.io/project-id`; the CR never names an account or project itself.

@@ -179,7 +179,7 @@ func contractKeys(ctx context.Context, t *testing.T, c *kaname.Client, sa *iamv1
 func contractBindings(ctx context.Context, t *testing.T, c *kaname.Client, fx Fixture, sa *iamv1.ServiceAccount) {
 	t.Helper()
 	// Выдача на учётку.
-	role, err := c.FindRole(ctx, fx.RoleName, fx.AccountID)
+	role, err := c.FindSystemRole(ctx, fx.RoleName)
 	if err != nil {
 		t.Fatalf("find role: %v", err)
 	}
