@@ -39,3 +39,18 @@ func TestVerdict(t *testing.T) {
 		})
 	}
 }
+
+// Текст отказа упавшей пробы доходит до сводки; вывод прошедшей — нет.
+func TestFailureTextReachesTheSummary(t *testing.T) {
+	s, err := Summarize(strings.NewReader(`{"Action":"output","Package":"p","Test":"A","Output":"    a_test.go:10: fine\n"}
+{"Action":"pass","Package":"p","Test":"A"}
+{"Action":"output","Package":"p","Test":"B","Output":"=== RUN   B\n"}
+{"Action":"output","Package":"p","Test":"B","Output":"    b_test.go:42: foreign record rewritten\n"}
+{"Action":"fail","Package":"p","Test":"B"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Failures) != 1 || s.Failures[0] != "p B: b_test.go:42: foreign record rewritten" {
+		t.Fatalf("failures = %q", s.Failures)
+	}
+}
