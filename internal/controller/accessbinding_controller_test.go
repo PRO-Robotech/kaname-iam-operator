@@ -25,10 +25,10 @@ var reservationGVK = schema.GroupVersionKind{Group: "registry.in-cloud.io", Vers
 // reserve заводит резерв id реестра в namespace арендатора (Active).
 func reserve(t *testing.T, tn tenant, id string) {
 	t.Helper()
-	reserveIn(t, tn.ns, id, "Active")
+	reserveIn(t, tn.ns, id)
 }
 
-func reserveIn(t *testing.T, ns, id, phase string) {
+func reserveIn(t *testing.T, ns, id string) {
 	t.Helper()
 	ctx := context.Background()
 	u := &unstructured.Unstructured{}
@@ -39,7 +39,7 @@ func reserveIn(t *testing.T, ns, id, phase string) {
 		t.Fatalf("create reservation: %v", err)
 	}
 	t.Cleanup(func() { _ = k8s.Delete(context.Background(), u) })
-	_ = unstructured.SetNestedField(u.Object, phase, "status", "phase")
+	_ = unstructured.SetNestedField(u.Object, "Active", "status", "phase")
 	if err := k8s.Status().Update(ctx, u); err != nil {
 		t.Fatalf("reservation status: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestABPolicyRefusalsHaveLawfulTwins(t *testing.T) {
 func TestABTargetOfAnotherNamespaceIsForbiddenAndOwnIsLawful(t *testing.T) {
 	tn := newTenant(t, true)
 	other := newTenant(t, true)
-	reserveIn(t, other.ns, "foreign1", "Active")
+	reserveIn(t, other.ns, "foreign1")
 	reserve(t, tn, "own1")
 	readySA(t, tn, "zot-tgt")
 	creates := countCalls("POST /iam/v1/accessBindings")

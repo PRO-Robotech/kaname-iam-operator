@@ -64,7 +64,7 @@ func run(m *testing.M) int {
 		fmt.Fprintln(os.Stderr, "admission suite: KUBEBUILDER_ASSETS is not set — run through `make test`; the suite is NOT executed")
 		return 3
 	}
-	out, err := helmTemplate(filepath.Join("testdata", "values.yaml"))
+	out, err := helmTemplate()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "helm template:", err)
 		return 1
@@ -112,9 +112,9 @@ func run(m *testing.M) int {
 	return m.Run()
 }
 
-func helmTemplate(values string, extra ...string) ([]byte, error) {
+func helmTemplate(extra ...string) ([]byte, error) {
 	args := append([]string{"template", release, filepath.Join(repoRoot, "charts", "kaname-iam-operator"),
-		"--namespace", releaseNS, "-f", values}, extra...)
+		"--namespace", releaseNS, "-f", filepath.Join("testdata", "values.yaml")}, extra...)
 	cmd := exec.Command("helm", args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -391,7 +391,7 @@ func TestRBACIsNarrow(t *testing.T) {
 }
 
 func TestChartRefusesAnIncompleteConfig(t *testing.T) {
-	_, err := helmTemplate(filepath.Join("testdata", "values.yaml"), "--set", "config.clusterName=")
+	_, err := helmTemplate("--set", "config.clusterName=")
 	if err == nil || !strings.Contains(err.Error(), "config.clusterName is required") {
 		t.Fatalf("render without clusterName: %v", err)
 	}

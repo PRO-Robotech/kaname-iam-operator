@@ -336,7 +336,7 @@ func OperationResult(op *operationpb.Operation, out proto.Message) error {
 		return ErrOperationNotDone
 	}
 	if st := op.GetError(); st != nil {
-		return &Error{Op: "Operation " + op.GetId(), Code: codes.Code(st.GetCode()), Message: st.GetMessage()}
+		return &Error{Op: "Operation " + op.GetId(), Code: codeFromWire(int64(st.GetCode())), Message: st.GetMessage()}
 	}
 	if out == nil {
 		return nil
@@ -526,8 +526,10 @@ func errorFromResponse(op string, status int, data []byte) *Error {
 		Code    *int   `json:"code"`
 		Message string `json:"message"`
 	}
-	if err := json.Unmarshal(data, &st); err == nil && st.Code != nil && *st.Code > 0 && *st.Code <= int(codes.Unauthenticated) {
-		return &Error{Op: op, Code: codes.Code(*st.Code), HTTPStatus: status, Message: st.Message}
+	if err := json.Unmarshal(data, &st); err == nil && st.Code != nil && *st.Code > 0 {
+		if c := codeFromWire(int64(*st.Code)); c != codes.Unknown || *st.Code == int(codes.Unknown) {
+			return &Error{Op: op, Code: c, HTTPStatus: status, Message: st.Message}
+		}
 	}
 	return &Error{Op: op, Code: codeFromHTTP(status), HTTPStatus: status, Message: http.StatusText(status)}
 }

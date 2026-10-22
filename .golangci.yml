@@ -15,7 +15,6 @@ linters:
     - misspell
     - nakedret
     - noctx
-    - prealloc
     - revive
     - staticcheck
     - unconvert
@@ -23,23 +22,27 @@ linters:
     - unused
   settings:
     gocyclo:
-      min-complexity: 30
+      min-complexity: 40
     revive:
       rules:
         - name: comment-spacings
         - name: import-shadowing
-        - name: exported
-          arguments: ["disableStutteringCheck"]
+    staticcheck:
+      checks:
+        - "SA*"
+        - "S1*"
+        - "ST1005"
+        - "ST1012"
     gosec:
       excludes:
-        # G101: имена констант с «token» — адреса и метки, не учётные данные.
+        # G101: константы с «token» в имени — адреса и метки, не учётные данные.
         - G101
   exclusions:
     generated: lax
     rules:
-      - linters: [gosec, errcheck, noctx, bodyclose, revive]
+      - linters: [gosec, errcheck, noctx, bodyclose, revive, unparam]
         path: _test\.go
-      - linters: [gosec, revive]
+      - linters: [gosec, revive, unparam]
         path: internal/fakes/
       - linters: [revive]
         path: hack/

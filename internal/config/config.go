@@ -406,7 +406,7 @@ type PathParams struct {
 // VaultPath вычисляет mount и путь записи ключа для приложения app. Значение
 // подстановки обязано быть именем k8s без разделителя пути: путь записи
 // вычисляет оператор, и вход CR не уводит его в чужой каталог.
-func (c *Config) VaultPath(app string, p PathParams) (mount, path string, err error) {
+func (c *Config) VaultPath(app string, p PathParams) (string, string, error) {
 	v, ok := c.Delivery.Vault[app]
 	if !ok {
 		return "", "", fmt.Errorf("delivery app %q is not configured", app)

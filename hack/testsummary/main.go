@@ -90,7 +90,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: testsummary <go test -json report>")
 		os.Exit(2)
 	}
-	f, err := os.Open(os.Args[1])
+	f, err := os.Open(os.Args[1]) //nolint:gosec // путь отчёта — аргумент цели make, не вход запроса.
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "testsummary:", err)
 		os.Exit(2)

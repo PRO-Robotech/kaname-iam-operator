@@ -184,7 +184,9 @@ func (p *abPass) refuse(v *policy.Violation) (ctrl.Result, error) {
 	return ctrl.Result{RequeueAfter: pendingRecheck}, nil
 }
 
-func (p *abPass) conflict(reason, msg string) (ctrl.Result, error) {
+// conflict — в kaname уже есть чужая выдача (без меток владения этого CR).
+func (p *abPass) conflict(msg string) (ctrl.Result, error) {
+	reason := iamv1alpha1.ReasonNotOwned
 	p.cond(iamv1alpha1.ConditionConflict, metav1.ConditionTrue, reason, msg)
 	p.notReady(reason, msg)
 	metrics.Refusals.WithLabelValues(kindAB, reason).Inc()
@@ -192,7 +194,9 @@ func (p *abPass) conflict(reason, msg string) (ctrl.Result, error) {
 	return ctrl.Result{RequeueAfter: conflictRecheck}, nil
 }
 
-func (p *abPass) drift(reason, msg string) (ctrl.Result, error) {
+// drift — выдача отозвана в kaname мимо оператора.
+func (p *abPass) drift(msg string) (ctrl.Result, error) {
+	reason := iamv1alpha1.ReasonRevokedExternally
 	if c := findCondition(p.ab.Status.Conditions, iamv1alpha1.ConditionDrifted); c == nil || c.Status != metav1.ConditionTrue || c.Reason != reason {
 		metrics.Drift.WithLabelValues(kindAB, reason).Inc()
 		p.r.Recorder.Eventf(p.ab, nil, corev1.EventTypeWarning, reason, "Reconcile",
@@ -267,7 +271,7 @@ func (p *abPass) reconcile(ctx context.Context) (ctrl.Result, error) {
 	if gone {
 		p.observeResync()
 		if !p.resyncNow {
-			return p.drift(iamv1alpha1.ReasonRevokedExternally, fmt.Sprintf("kaname binding %s was revoked outside the operator", st.ID))
+			return p.drift(fmt.Sprintf("kaname binding %s was revoked outside the operator", st.ID))
 		}
 		p.r.Recorder.Eventf(ab, nil, corev1.EventTypeNormal, "Resync", "Reconcile", "regranting binding %s revoked outside the operator", st.ID)
 		st.ID, st.BindingHash = "", ""
@@ -277,7 +281,7 @@ func (p *abPass) reconcile(ctx context.Context) (ctrl.Result, error) {
 		return p.fail(err)
 	}
 	if !p.owned(remote.GetLabels()) {
-		return p.conflict(iamv1alpha1.ReasonNotOwned, fmt.Sprintf("kaname binding %s does not carry the ownership labels of this object", st.ID))
+		return p.conflict(fmt.Sprintf("kaname binding %s does not carry the ownership labels of this object", st.ID))
 	}
 	p.observeResync()
 	if st.BindingHash != want.hash {
@@ -415,8 +419,7 @@ func (p *abPass) ensureBinding(ctx context.Context, want desired) (ctrl.Result, 
 			continue
 		}
 		if !p.owned(b.GetLabels()) {
-			return p.conflict(iamv1alpha1.ReasonNotOwned,
-				fmt.Sprintf("kaname binding %s with the same subjects, role, scope and target exists and is not owned by this object", b.GetId()))
+			return p.conflict(fmt.Sprintf("kaname binding %s with the same subjects, role, scope and target exists and is not owned by this object", b.GetId()))
 		}
 		st.ID, st.BindingHash = b.GetId(), want.hash
 		resolved := want.resolved

@@ -113,6 +113,24 @@ func classOf(c codes.Code) Class {
 	}
 }
 
+// grpcCodes — словарь кодов gRPC по номеру: номер с провода переводится
+// поиском в словаре, а не преобразованием целого (номер вне словаря —
+// codes.Unknown).
+var grpcCodes = []codes.Code{
+	codes.OK, codes.Canceled, codes.Unknown, codes.InvalidArgument, codes.DeadlineExceeded,
+	codes.NotFound, codes.AlreadyExists, codes.PermissionDenied, codes.ResourceExhausted,
+	codes.FailedPrecondition, codes.Aborted, codes.OutOfRange, codes.Unimplemented,
+	codes.Internal, codes.Unavailable, codes.DataLoss, codes.Unauthenticated,
+}
+
+// codeFromWire — код gRPC по номеру с провода.
+func codeFromWire(n int64) codes.Code {
+	if n < 0 || n >= int64(len(grpcCodes)) {
+		return codes.Unknown
+	}
+	return grpcCodes[n]
+}
+
 // CodeOf — код gRPC отказа kaname; codes.Unknown, если ошибка не от kaname.
 func CodeOf(err error) codes.Code {
 	var ke *Error
