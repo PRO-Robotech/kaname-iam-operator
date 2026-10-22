@@ -224,9 +224,9 @@ func TestAllInScopeAccountGrantReachesEveryRegistryOfTheAccount(t *testing.T) {
 			t.Fatalf("%s already allowed v_update on %s before any grant: the probe has nothing to measure", sub, repoA)
 		}
 	}
-	if got, _ := allowed(t, rc, user, "v_update", repoC); !got {
-		t.Fatalf("%s is denied v_update on %s of its own account %s: the stand is not the world this probe assumes", user, repoC, foreignAccount)
-	}
+	// Предпосылка мира пробы: человек — владелец чужого аккаунта, и там ему
+	// разрешено всё без выдачи (право владельца материализуется фоном).
+	eventuallyAllowed(t, rc, true, user, "v_update", repoC)
 	whole := func(name, creator string) *iamv1alpha1.AccessBinding {
 		return &iamv1alpha1.AccessBinding{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns.Name,
