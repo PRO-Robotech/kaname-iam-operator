@@ -55,6 +55,14 @@ accepts every assertion once) and exchanges it at `POST /iam/v1/token`
   The Vault record carries its owner (`ownerUid`, `cluster`, `keyName`) in the same
   check-and-set write; a record at the key path with another owner is neither
   overwritten nor deleted, and the key reports `Conflict=True` (`NotOwned`).
+* **Policy is judged on every pass.** A binding the operator policy no longer permits —
+  `policy.allowedRoles` or `policy.platformPrincipals` narrowed, the admission guarantee
+  lost — is revoked in kaname the way deletion revokes it (replaced, current, own by
+  labels, the unconfirmed-create window), whatever its `deletionPolicy`, and is not
+  granted again while the policy forbids it: the CR reports `Rejected=True`
+  (`PolicyNarrowed`). A binding that stays permissible is untouched; once permitted
+  again, it is granted anew. A configuration change restarts the operator pod (config
+  checksum), so every CR is judged by the new policy.
 * **Deletion.** `AccessBinding`: the binding is revoked. `ServiceAccount`: waits until
   no `AccessBinding` refers to it, disables the account, revokes every key, deletes the
   Vault records, deletes the account. `deletionPolicy: Orphan` removes the finalizer only.
@@ -79,7 +87,7 @@ refuses to start on an incomplete or contradictory file. Notable keys:
 | `kaname.requestedAudience` | `audience` of the exchange — the REST front audience |
 | `vault.*` | Vault address, kubernetes-auth mount and role, projected token path |
 | `policy.allowedRoles`, `systemClassRoles` | operator-side check, independent of admission; a role is looked up among **system** roles only — a tenant role of the same name is never granted |
-| `policy.platformPrincipals`, `policy.admissionGuard` | who may name user and group subjects and set an `allInScope` target; the author is read from `created-by`, which only admission makes authentic, so user and group subjects and `allInScope` are accepted only while every policy in `admissionGuard` (and its binding of the same name) is installed, denies, is not narrowed and predates the CR. The chart fills `admissionGuard` when `admission.enabled`; without admission they are refused |
+| `policy.platformPrincipals`, `policy.admissionGuard` | who may name user and group subjects and set an `allInScope` target; the author is read from `created-by`, which only admission makes authentic, so user and group subjects and `allInScope` are accepted only while every policy in `admissionGuard` (and its binding of the same name) is installed, denies, is not narrowed and stood when the current spec was written: the policy predates the CR, or the operator saw the same policy object (uid, `status.admissionWitness`) at an earlier spec generation. A spec written while a policy was absent is refused until the next spec change under the reinstalled, already seen policy. The chart fills `admissionGuard` when `admission.enabled`; without admission they are refused |
 | `policy.targetResolvers` | how a target type resolves to an object of the CR namespace |
 | `delivery.vault.<app>` | KV v2 mount and path template (`{cluster}`, `{namespace}`, `{instance}`, `{name}`, `{key}`); `{cluster}`, `{namespace}`, `{name}`, `{key}` are required and every placeholder is a whole path segment, so two keys never share a path |
 

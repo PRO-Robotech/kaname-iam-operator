@@ -185,6 +185,62 @@ func (p *abPass) refuse(v *policy.Violation) (ctrl.Result, error) {
 	return ctrl.Result{RequeueAfter: pendingRecheck}, nil
 }
 
+// reject — выдача запрещена политикой оператора либо не имеет гарантии
+// допуска. Объект, который ничего не держит в kaname, отвергается без
+// вызовов (refuse). Объект, который держит выдачу либо мог её завести
+// (holds), её отзывает — тем же порядком, что удаление CR (withdraw), по
+// одному изменяющему вызову за проход, — и вновь не заводит, пока выдача не
+// станет допустимой: Rejected/PolicyNarrowed. Политика удаления здесь не
+// действует: Orphan касается только удаления CR, а выдача, запрещённая
+// политикой оператора, не действует ни при какой.
+func (p *abPass) reject(ctx context.Context, v *policy.Violation) (ctrl.Result, error) {
+	narrowed := p.narrowed()
+	if !p.holds() {
+		if !narrowed {
+			p.cond(iamv1alpha1.ConditionRejected, metav1.ConditionTrue, v.Reason, v.Message)
+			return p.refuse(v)
+		}
+		p.withdrawn(v)
+		return ctrl.Result{RequeueAfter: invalidRecheck}, nil
+	}
+	if !narrowed {
+		metrics.Refusals.WithLabelValues(kindAB, iamv1alpha1.ReasonPolicyNarrowed).Inc()
+		p.r.Recorder.Eventf(p.ab, nil, corev1.EventTypeWarning, iamv1alpha1.ReasonPolicyNarrowed, "Reconcile",
+			"withdrawing the kaname binding, it is no longer permitted: %s", v.Message)
+	}
+	p.cond(iamv1alpha1.ConditionRejected, metav1.ConditionTrue, iamv1alpha1.ReasonPolicyNarrowed, v.Message)
+	p.cond(iamv1alpha1.ConditionSynced, metav1.ConditionFalse, iamv1alpha1.ReasonPolicyNarrowed, v.Message)
+	res, err, done := p.withdraw(ctx)
+	if !done {
+		return res, err
+	}
+	// Держать больше нечего: без Resolved следующие проходы kaname не зовут.
+	p.ab.Status.Resolved = nil
+	p.withdrawn(v)
+	return ctrl.Result{RequeueAfter: invalidRecheck}, nil
+}
+
+// withdrawn — условия объекта, чья выдача отозвана по политике.
+func (p *abPass) withdrawn(v *policy.Violation) {
+	p.cond(iamv1alpha1.ConditionRejected, metav1.ConditionTrue, iamv1alpha1.ReasonPolicyNarrowed, v.Message)
+	p.cond(iamv1alpha1.ConditionSynced, metav1.ConditionFalse, iamv1alpha1.ReasonPolicyNarrowed, v.Message)
+	p.notReady(iamv1alpha1.ReasonPolicyNarrowed, "the kaname binding is withdrawn: "+v.Message)
+}
+
+// narrowed — отозвана (отзывается) ли уже выдача объекта по политике.
+func (p *abPass) narrowed() bool {
+	c := findCondition(p.ab.Status.Conditions, iamv1alpha1.ConditionRejected)
+	return c != nil && c.Status == metav1.ConditionTrue && c.Reason == iamv1alpha1.ReasonPolicyNarrowed
+}
+
+// holds — держит ли объект выдачу в kaname либо мог её завести: id
+// действующей, прежняя замена, незавершённая операция, намерение создания
+// либо Resolved — его пишут намерение до вызова Create и усыновление.
+func (p *abPass) holds() bool {
+	st := &p.ab.Status
+	return st.ID != "" || st.Replaced != nil || st.PendingOperation != nil || st.PendingHash != "" || st.Resolved != nil
+}
+
 // conflict — в kaname уже есть чужая выдача (без меток владения этого CR).
 func (p *abPass) conflict(msg string) (ctrl.Result, error) {
 	reason := iamv1alpha1.ReasonNotOwned
@@ -230,6 +286,22 @@ type desired struct {
 
 func (p *abPass) reconcile(ctx context.Context) (ctrl.Result, error) {
 	ab, st := p.ab, &p.ab.Status
+	// Политика судит выдачу на каждом проходе и раньше области: выдача,
+	// ставшая недопустимой, отзывается и тогда, когда область не разрешается.
+	if v := policy.Evaluate(p.r.Config.Policy, ab); v != nil {
+		return p.reject(ctx, v)
+	}
+	if policy.NeedsAdmissionGuarantee(ab) {
+		v, w, err := policy.CheckAdmissionGuarantee(ctx, p.r.Reader, p.r.Config.Policy.AdmissionGuard, ab)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		st.AdmissionWitness = w
+		if v != nil {
+			return p.reject(ctx, v)
+		}
+	}
+	p.cond(iamv1alpha1.ConditionRejected, metav1.ConditionFalse, iamv1alpha1.ReasonPolicySatisfied, "")
 	ns := &corev1.Namespace{}
 	if err := p.r.Get(ctx, client.ObjectKey{Name: ab.Namespace}, ns); err != nil {
 		return ctrl.Result{}, err
@@ -244,19 +316,6 @@ func (p *abPass) reconcile(ctx context.Context) (ctrl.Result, error) {
 		p.notReady(iamv1alpha1.ReasonScopeUnresolved, fmt.Sprintf("namespace %s needs annotations %s and %s",
 			ab.Namespace, iamv1alpha1.AnnotationAccountID, ann))
 		return ctrl.Result{}, nil
-	}
-	if v := policy.Evaluate(p.r.Config.Policy, ab); v != nil {
-		return p.refuse(v)
-	}
-	if policy.NeedsAdmissionGuarantee(ab) {
-		v, w, err := policy.CheckAdmissionGuarantee(ctx, p.r.Reader, p.r.Config.Policy.AdmissionGuard, ab)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		st.AdmissionWitness = w
-		if v != nil {
-			return p.refuse(v)
-		}
 	}
 	// Цель «вся область» объекта namespace не называет: подтверждать нечего,
 	// её пределы — область выдачи из аннотаций namespace.
@@ -612,55 +671,70 @@ func (p *abPass) apply(ctx context.Context, verb iamv1alpha1.OperationVerb, subj
 	return ctrl.Result{RequeueAfter: requeueNow}, nil
 }
 
-// finalize — удаление CR: отозвать прежнюю и действующую выдачи, снять
-// финализатор. Orphan — только снять финализатор.
+// finalize — удаление CR: отозвать всё, что объект держит в kaname
+// (withdraw), снять финализатор. Orphan — только снять финализатор.
 func (p *abPass) finalize(ctx context.Context) (ctrl.Result, error) {
-	ab, st := p.ab, &p.ab.Status
+	ab := p.ab
 	if !controllerutil.ContainsFinalizer(ab, iamv1alpha1.Finalizer) {
 		return ctrl.Result{}, nil
 	}
 	if ab.Spec.EffectiveDeletionPolicy() == iamv1alpha1.DeletionPolicyOrphan {
 		return p.removeFinalizer(ctx)
 	}
+	res, err, done := p.withdraw(ctx)
+	if !done {
+		return res, err
+	}
+	return p.removeFinalizer(ctx)
+}
+
+// withdraw снимает всё, что объект держит в kaname: дочитывает операцию,
+// отзывает прежнюю замену и действующую выдачу. Выдача могла завестись, но не
+// дойти до status: своя ищется по меткам в аккаунте намерения и в аккаунте
+// namespace; не найдена, а создание не подтверждено, — проход ждёт её
+// появления либо истечения окна (awaitCreate). Один изменяющий вызов за
+// проход; done — держать больше нечего.
+func (p *abPass) withdraw(ctx context.Context) (ctrl.Result, error, bool) {
+	st := &p.ab.Status
 	if st.PendingOperation != nil {
 		if res, err, proceed := p.resolvePending(ctx); !proceed {
-			return res, err
+			return res, err, false
 		}
 	}
 	if st.Replaced != nil {
-		return p.revoke(ctx, st.Replaced.ID)
+		res, err := p.revoke(ctx, st.Replaced.ID)
+		return res, err, false
 	}
 	if st.ID != "" {
-		return p.revoke(ctx, st.ID)
+		res, err := p.revoke(ctx, st.ID)
+		return res, err, false
 	}
-	// Выдача могла завестись, но не дойти до status: ищется своя по меткам в
-	// аккаунте намерения и в аккаунте namespace. Не найдена, а создание не
-	// подтверждено, — финализатор держится до её появления либо до истечения
-	// окна (awaitCreate).
 	recorded := ""
 	if st.Resolved != nil {
 		recorded = st.Resolved.AccountID
 	}
-	accounts, err := deletionAccounts(ctx, p.r.Client, ab.Namespace, recorded)
+	accounts, err := deletionAccounts(ctx, p.r.Client, p.ab.Namespace, recorded)
 	if err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, err, false
 	}
 	for _, acc := range accounts {
 		list, err := p.r.Kaname.ListAccessBindingsByAccount(ctx, acc)
 		if err != nil {
-			return p.fail(err)
+			res, ferr := p.fail(err)
+			return res, ferr, false
 		}
 		p.seeIntent(list)
 		for _, b := range list {
 			if b.GetStatus() != iamv1.AccessBinding_REVOKED && p.owned(b.GetLabels()) {
-				return p.revoke(ctx, b.GetId())
+				res, err := p.revoke(ctx, b.GetId())
+				return res, err, false
 			}
 		}
 	}
 	if res, wait := p.awaitCreate(); wait {
-		return res, nil
+		return res, nil, false
 	}
-	return p.removeFinalizer(ctx)
+	return ctrl.Result{}, nil, true
 }
 
 // clearIntent снимает намерение создания: его исход известен.
