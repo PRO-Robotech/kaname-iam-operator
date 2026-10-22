@@ -283,14 +283,23 @@ func TestMutationPathsAndVerbs(t *testing.T) {
 	}))
 	ctx := context.Background()
 	steps := []func() error{
-		func() error { _, e := c.CreateServiceAccount(ctx, &iamv1.CreateServiceAccountRequest{AccountId: "a", Name: "n"}); return e },
-		func() error { _, e := c.UpdateServiceAccount(ctx, &iamv1.UpdateServiceAccountRequest{ServiceAccountId: "s"}); return e },
+		func() error {
+			_, e := c.CreateServiceAccount(ctx, &iamv1.CreateServiceAccountRequest{AccountId: "a", Name: "n"})
+			return e
+		},
+		func() error {
+			_, e := c.UpdateServiceAccount(ctx, &iamv1.UpdateServiceAccountRequest{ServiceAccountId: "s"})
+			return e
+		},
 		func() error { _, e := c.DisableServiceAccount(ctx, "s"); return e },
 		func() error { _, e := c.EnableServiceAccount(ctx, "s"); return e },
 		func() error { _, e := c.DeleteServiceAccount(ctx, "s"); return e },
 		func() error { _, e := c.RevokeKey(ctx, "s", "k"); return e },
 		func() error { _, e := c.CreateAccessBinding(ctx, &iamv1.CreateAccessBindingRequest{}); return e },
-		func() error { _, e := c.UpdateAccessBinding(ctx, &iamv1.UpdateAccessBindingRequest{AccessBindingId: "b"}); return e },
+		func() error {
+			_, e := c.UpdateAccessBinding(ctx, &iamv1.UpdateAccessBindingRequest{AccessBindingId: "b"})
+			return e
+		},
 		func() error { _, e := c.RevokeAccessBinding(ctx, "b"); return e },
 		func() error { _, e := c.GetOperation(ctx, "op9"); return e },
 	}

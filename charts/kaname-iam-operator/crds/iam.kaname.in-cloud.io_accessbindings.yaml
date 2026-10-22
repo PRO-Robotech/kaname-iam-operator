@@ -1,0 +1,389 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.23.0
+  name: accessbindings.iam.kaname.in-cloud.io
+spec:
+  group: iam.kaname.in-cloud.io
+  names:
+    categories:
+    - kaname-iam
+    kind: AccessBinding
+    listKind: AccessBindingList
+    plural: accessbindings
+    shortNames:
+    - kab
+    singular: accessbinding
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.roleRef.name
+      name: Role
+      type: string
+    - jsonPath: .status.id
+      name: ID
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].reason
+      name: Reason
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: AccessBinding — выдача роли kaname IAM субъектам на цели в области.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: AccessBindingSpec — желаемая выдача kaname.
+            properties:
+              deletionPolicy:
+                default: Delete
+                description: DeletionPolicy — что делать с выдачей kaname при удалении
+                  CR.
+                enum:
+                - Delete
+                - Orphan
+                type: string
+              expiresAt:
+                description: ExpiresAt — срок выдачи. Смена — тоже новая выдача.
+                format: date-time
+                type: string
+              labels:
+                additionalProperties:
+                  type: string
+                description: Labels — метки выдачи в kaname. Префикс k8s.in-cloud.io/
+                  занят оператором.
+                maxProperties: 32
+                type: object
+                x-kubernetes-validations:
+                - message: label prefix k8s.in-cloud.io/ is reserved for the operator
+                  rule: self.all(k, !k.startsWith('k8s.in-cloud.io/'))
+                - message: label keys must match ^[a-z][-_./@a-z0-9]{0,62}$
+                  rule: self.all(k, k.matches('^[a-z][-_./@a-z0-9]{0,62}$'))
+                - message: label values must be at most 63 characters
+                  rule: self.all(k, size(self[k]) <= 63)
+              roleRef:
+                description: RoleRef — роль. Неизменяема.
+                properties:
+                  name:
+                    description: Name — имя роли (например registry.pusher).
+                    maxLength: 128
+                    pattern: ^[a-z][a-z0-9._-]{0,127}$
+                    type: string
+                required:
+                - name
+                type: object
+                x-kubernetes-validations:
+                - message: roleRef is immutable
+                  rule: self == oldSelf
+              scope:
+                default: {}
+                description: Scope — область. Неизменяема.
+                properties:
+                  type:
+                    default: iam.project
+                    description: Type — тип области.
+                    enum:
+                    - iam.project
+                    - iam.account
+                    type: string
+                type: object
+                x-kubernetes-validations:
+                - message: scope is immutable
+                  rule: self == oldSelf
+              subjects:
+                description: Subjects — субъекты выдачи. Неизменяемы.
+                items:
+                  description: Subject — ровно один субъект выдачи.
+                  properties:
+                    group:
+                      description: Group — группа kaname. Допускается только от принципалов
+                        платформы.
+                      properties:
+                        id:
+                          description: ID — id субъекта в kaname.
+                          maxLength: 64
+                          minLength: 1
+                          type: string
+                      required:
+                      - id
+                      type: object
+                    serviceAccountRef:
+                      description: ServiceAccountRef — CR ServiceAccount этого namespace;
+                        субъект — его status.id.
+                      properties:
+                        name:
+                          description: Name — имя CR ServiceAccount.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    systemClass:
+                      description: |-
+                        SystemClass — системный класс. Допускается только с ролями системных
+                        классов из конфигурации оператора.
+                      properties:
+                        name:
+                          description: Name — имя класса.
+                          enum:
+                          - anonymous
+                          - authenticated
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    user:
+                      description: User — пользователь kaname. Допускается только
+                        от принципалов платформы.
+                      properties:
+                        id:
+                          description: ID — id субъекта в kaname.
+                          maxLength: 64
+                          minLength: 1
+                          type: string
+                      required:
+                      - id
+                      type: object
+                  type: object
+                  x-kubernetes-validations:
+                  - message: exactly one of serviceAccountRef, user, group, systemClass
+                      must be set
+                    rule: '[has(self.serviceAccountRef), has(self.user), has(self.group),
+                      has(self.systemClass)].filter(x, x).size() == 1'
+                maxItems: 16
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: atomic
+                x-kubernetes-validations:
+                - message: subjects are immutable
+                  rule: self == oldSelf
+              target:
+                description: |-
+                  Target — цель. В kaname цель выдачи неизменяема, поэтому смена цели
+                  здесь означает новую выдачу: оператор заводит выдачу с новой целью и
+                  только после этого отзывает прежнюю.
+                properties:
+                  resources:
+                    description: |-
+                      Resources — объекты-цели. Каждый обязан разрешиться в объект ЭТОГО
+                      namespace по правилам конфигурации оператора.
+                    items:
+                      description: ResourceRef — объект-цель выдачи.
+                      properties:
+                        id:
+                          description: ID — id объекта.
+                          maxLength: 64
+                          pattern: ^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,63}$
+                          type: string
+                        type:
+                          description: Type — тип объекта kaname.
+                          maxLength: 32
+                          pattern: ^[a-z][a-z0-9_.]{0,31}$
+                          type: string
+                      required:
+                      - id
+                      - type
+                      type: object
+                    maxItems: 16
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-type: atomic
+                required:
+                - resources
+                type: object
+            required:
+            - roleRef
+            - subjects
+            - target
+            type: object
+          status:
+            description: AccessBindingStatus — наблюдаемое состояние выдачи.
+            properties:
+              bindingHash:
+                description: |-
+                  BindingHash — отпечаток (субъекты, роль, область, цель, срок) действующей
+                  выдачи: расхождение с желаемым означает новую выдачу.
+                type: string
+              conditions:
+                description: Conditions — Ready, Synced, Conflict, SubjectPending,
+                  Drifted.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              id:
+                description: ID — id действующей выдачи в kaname.
+                type: string
+              observedGeneration:
+                description: ObservedGeneration — поколение spec, по которому выставлены
+                  условия.
+                format: int64
+                type: integer
+              pendingHash:
+                description: PendingHash — отпечаток выдачи, которую заводит PendingOperation
+                  Create.
+                type: string
+              pendingOperation:
+                description: PendingOperation — незавершённая операция kaname.
+                properties:
+                  id:
+                    description: ID — идентификатор операции kaname.
+                    minLength: 1
+                    type: string
+                  startedAt:
+                    description: StartedAt — момент запуска операции.
+                    format: date-time
+                    type: string
+                  subject:
+                    description: |-
+                      Subject — предмет операции внутри объекта (имя ключа, id выдачи), если он
+                      не равен самому объекту.
+                    type: string
+                  verb:
+                    description: Verb — что делает операция.
+                    enum:
+                    - Create
+                    - Update
+                    - Disable
+                    - Enable
+                    - Delete
+                    - IssueKey
+                    - RevokeKey
+                    - Revoke
+                    type: string
+                required:
+                - id
+                - startedAt
+                - verb
+                type: object
+              replaced:
+                description: Replaced — прежняя выдача, ждущая отзыва.
+                properties:
+                  id:
+                    description: ID — id прежней выдачи.
+                    type: string
+                required:
+                - id
+                type: object
+              resolved:
+                description: Resolved — выдача в терминах kaname.
+                properties:
+                  roleId:
+                    description: RoleID — id роли.
+                    type: string
+                  scopeId:
+                    description: ScopeID — id области.
+                    type: string
+                  scopeType:
+                    description: ScopeType — тип области.
+                    type: string
+                  subjects:
+                    description: Subjects — субъекты.
+                    items:
+                      description: ResolvedSubject — субъект в терминах kaname.
+                      properties:
+                        id:
+                          description: ID — id субъекта.
+                          type: string
+                        type:
+                          description: Type — SUBJECT_TYPE_* kaname.
+                          type: string
+                      required:
+                      - id
+                      - type
+                      type: object
+                    type: array
+                    x-kubernetes-list-type: atomic
+                type: object
+              resyncNonce:
+                description: |-
+                  ResyncNonce — значение аннотации resync-drift, по которому восстановление
+                  уже выполнено.
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

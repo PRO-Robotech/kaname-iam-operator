@@ -1,0 +1,57 @@
+version: "2"
+run:
+  allow-parallel-runners: true
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - copyloopvar
+    - errcheck
+    - errorlint
+    - gocyclo
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - nakedret
+    - noctx
+    - prealloc
+    - revive
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
+  settings:
+    gocyclo:
+      min-complexity: 30
+    revive:
+      rules:
+        - name: comment-spacings
+        - name: import-shadowing
+        - name: exported
+          arguments: ["disableStutteringCheck"]
+    gosec:
+      excludes:
+        # G101: имена констант с «token» — адреса и метки, не учётные данные.
+        - G101
+  exclusions:
+    generated: lax
+    rules:
+      - linters: [gosec, errcheck, noctx, bodyclose, revive]
+        path: _test\.go
+      - linters: [gosec, revive]
+        path: internal/fakes/
+      - linters: [revive]
+        path: hack/
+    paths:
+      - zz_generated
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/PRO-Robotech/kaname-iam-operator
+  exclusions:
+    generated: lax

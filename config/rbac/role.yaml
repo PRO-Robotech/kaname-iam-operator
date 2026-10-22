@@ -1,0 +1,48 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - iam.kaname.in-cloud.io
+  resources:
+  - accessbindings
+  - serviceaccounts
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - iam.kaname.in-cloud.io
+  resources:
+  - accessbindings/finalizers
+  - serviceaccounts/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - iam.kaname.in-cloud.io
+  resources:
+  - accessbindings/status
+  - serviceaccounts/status
+  verbs:
+  - get
+  - patch
+  - update
