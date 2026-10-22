@@ -299,8 +299,11 @@ spec:
                 format: int64
                 type: integer
               pendingHash:
-                description: PendingHash — отпечаток выдачи, которую заводит PendingOperation
-                  Create.
+                description: |-
+                  PendingHash — отпечаток выдачи, создание которой не подтверждено:
+                  пишется ДО вызова Create (намерение) и снимается, когда исход создания
+                  известен — по завершённой операции либо по выдаче с этим отпечатком в
+                  списке. Пока он есть, пустой список не доказывает, что выдачи нет.
                 type: string
               pendingOperation:
                 description: PendingOperation — незавершённая операция kaname.
@@ -335,6 +338,13 @@ spec:
                 - startedAt
                 - verb
                 type: object
+              pendingSince:
+                description: |-
+                  PendingSince — время записи намерения PendingHash. Неподтверждённое
+                  создание ждётся kaname.createGrace от этого времени: столько удаление не
+                  снимает финализатор и новая выдача не заводится.
+                format: date-time
+                type: string
               replaced:
                 description: Replaced — прежняя выдача, ждущая отзыва.
                 properties:

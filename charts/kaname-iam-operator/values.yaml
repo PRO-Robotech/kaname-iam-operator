@@ -38,6 +38,9 @@ config:
     requestedAudience: ""
     callTimeout: 10s
     assertionTTL: 10m
+    # Сколько ждать исхода создания, чей ответ потерян (kaname заводит объект
+    # фоном): столько удаление CR не снимает финализатор при пустом поиске.
+    createGrace: 10m
     qps: 10
     burst: 20
   vault:

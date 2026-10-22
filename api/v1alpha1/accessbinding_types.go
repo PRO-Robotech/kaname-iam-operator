@@ -192,9 +192,17 @@ type AccessBindingStatus struct {
 	// PendingOperation — незавершённая операция kaname.
 	// +optional
 	PendingOperation *PendingOperation `json:"pendingOperation,omitempty"`
-	// PendingHash — отпечаток выдачи, которую заводит PendingOperation Create.
+	// PendingHash — отпечаток выдачи, создание которой не подтверждено:
+	// пишется ДО вызова Create (намерение) и снимается, когда исход создания
+	// известен — по завершённой операции либо по выдаче с этим отпечатком в
+	// списке. Пока он есть, пустой список не доказывает, что выдачи нет.
 	// +optional
 	PendingHash string `json:"pendingHash,omitempty"`
+	// PendingSince — время записи намерения PendingHash. Неподтверждённое
+	// создание ждётся kaname.createGrace от этого времени: столько удаление не
+	// снимает финализатор и новая выдача не заводится.
+	// +optional
+	PendingSince *metav1.Time `json:"pendingSince,omitempty"`
 	// ResyncNonce — значение аннотации resync-drift, по которому восстановление
 	// уже выполнено.
 	// +optional

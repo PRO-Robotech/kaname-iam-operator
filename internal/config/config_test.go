@@ -64,6 +64,9 @@ func TestParseValidConfigAppliesDefaults(t *testing.T) {
 	if got := c.Keys.OrphanGrace.Duration; got != 10*time.Minute {
 		t.Errorf("keys.orphanGrace default = %s, want 10m", got)
 	}
+	if got := c.Kaname.CreateGrace.Duration; got != 10*time.Minute {
+		t.Errorf("kaname.createGrace default = %s, want 10m", got)
+	}
 	if got := c.Kaname.TokenURL; got != "https://kaname.kaname.svc:9098/iam/v1/token" {
 		t.Errorf("kaname.tokenURL default = %q", got)
 	}
@@ -108,6 +111,9 @@ func TestParseRefusesEachBrokenFact(t *testing.T) {
 		{"call timeout too long", "audience: https://kaname.local", "audience: https://kaname.local\n  callTimeout: 5m", "kaname.callTimeout"},
 		{"assertion ttl below apiserver floor", "audience: https://kaname.local", "audience: https://kaname.local\n  assertionTTL: 5m", "kaname.assertionTTL"},
 		{"assertion ttl above kaname ceiling", "audience: https://kaname.local", "audience: https://kaname.local\n  assertionTTL: 2h", "kaname.assertionTTL"},
+		// Окно короче фонового исполнения kaname — пустой поиск снова читался
+		// бы доказательством отсутствия.
+		{"create grace below the floor", "audience: https://kaname.local", "audience: https://kaname.local\n  createGrace: 30s", "kaname.createGrace"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

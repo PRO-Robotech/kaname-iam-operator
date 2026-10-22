@@ -397,6 +397,8 @@ func (p *saPass) ensureIdentity(ctx context.Context, accountID string) (ctrl.Res
 		return p.fail(err)
 	}
 	if found != nil {
+		// Учётка с этим именем видна: исход прежнего создания известен.
+		sa.Status.CreatingSince = nil
 		if !ownedBy(found.GetLabels(), string(sa.UID), cfg.ClusterName) {
 			return p.conflict(iamv1alpha1.ReasonNotOwned,
 				fmt.Sprintf("kaname account %q (%s) exists in account %s and is not owned by this object", sa.Spec.Name, found.GetId(), accountID))
@@ -405,8 +407,13 @@ func (p *saPass) ensureIdentity(ctx context.Context, accountID string) (ctrl.Res
 		p.r.Recorder.Eventf(sa, nil, corev1.EventTypeNormal, "Adopted", "Reconcile", "adopted kaname account %s", found.GetId())
 		return ctrl.Result{RequeueAfter: requeueNow}, nil
 	}
-	// Намерение — до вызова: аккаунт в status (с проверкой resourceVersion).
-	// Учётка, чей id не дошёл до status, находится по нему и при удалении CR.
+	// Намерение — до вызова: аккаунт и время в status (с проверкой
+	// resourceVersion). Учётка, чей id не дошёл до status, находится по ним и
+	// при удалении CR, а пока она не видна, удаление её ждёт (awaitCreate).
+	// Повторное создание, пока прежнее не видно, учётки не удваивает: имя в
+	// аккаунте единственно, второе создание завершится AlreadyExists.
+	since := metav1.NewTime(p.now())
+	sa.Status.CreatingSince = &since
 	p.notReady(iamv1alpha1.ReasonInProgress, "creating the kaname account")
 	if err := p.save(ctx); err != nil {
 		return ctrl.Result{}, err
@@ -416,8 +423,14 @@ func (p *saPass) ensureIdentity(ctx context.Context, accountID string) (ctrl.Res
 		Labels: desiredLabels(sa.Spec.Labels, sa, cfg.ClusterName),
 	})
 	if err != nil {
-		if kaname.Classify(err) == kaname.ClassAlreadyExists {
+		switch kaname.Classify(err) {
+		case kaname.ClassAlreadyExists:
+			sa.Status.CreatingSince = nil
 			return ctrl.Result{RequeueAfter: requeueNow}, nil
+		case kaname.ClassInvalid, kaname.ClassForbidden, kaname.ClassNotFound:
+			// Отказ до запуска операции: учётки не будет. Прочие отказы
+			// исхода не называют — намерение остаётся.
+			sa.Status.CreatingSince = nil
 		}
 		return p.fail(err)
 	}
@@ -466,6 +479,7 @@ func (p *saPass) apply(ctx context.Context, verb iamv1alpha1.OperationVerb, subj
 	case iamv1alpha1.VerbCreate:
 		var out iamv1.ServiceAccount
 		err := kaname.OperationResult(op, &out)
+		st.CreatingSince = nil
 		switch {
 		case err == nil:
 			st.ID = out.GetId()
@@ -534,7 +548,9 @@ func (p *saPass) finalize(ctx context.Context) (ctrl.Result, error) {
 	cfg := p.r.Config
 	if st.ID == "" {
 		// Учётка могла завестись, а id — не дойти до status: ищется своя по
-		// имени в аккаунте status либо, если его нет, namespace.
+		// имени в аккаунте status либо, если его нет, namespace. Не найдена, а
+		// создание не подтверждено, — финализатор держится до её появления
+		// либо до истечения окна (awaitCreate).
 		accounts, err := deletionAccounts(ctx, p.r.Client, sa.Namespace, st.AccountID)
 		if err != nil {
 			return ctrl.Result{}, err
@@ -544,10 +560,17 @@ func (p *saPass) finalize(ctx context.Context) (ctrl.Result, error) {
 			if err != nil {
 				return p.fail(err)
 			}
-			if found != nil && ownedBy(found.GetLabels(), string(sa.UID), cfg.ClusterName) {
+			if found == nil {
+				continue
+			}
+			st.CreatingSince = nil
+			if ownedBy(found.GetLabels(), string(sa.UID), cfg.ClusterName) {
 				st.ID, st.AccountID = found.GetId(), acc
 				return ctrl.Result{RequeueAfter: requeueNow}, nil
 			}
+		}
+		if res, wait := p.awaitCreate(); wait {
+			return res, nil
 		}
 	}
 	if st.ID != "" {
@@ -568,6 +591,30 @@ func (p *saPass) finalize(ctx context.Context) (ctrl.Result, error) {
 		return p.failVault(err)
 	}
 	return p.removeFinalizer(ctx)
+}
+
+// awaitCreate — создание учётки не подтверждено (CreatingSince есть,
+// операции в status нет): kaname заводит её фоном после ответа Create, и
+// пустой поиск ещё не доказывает, что её не будет. Пока окно
+// kaname.createGrace не истекло, проход ждёт (wait); истекло — намерение
+// снимается с предупреждением.
+func (p *saPass) awaitCreate() (res ctrl.Result, wait bool) {
+	st := &p.sa.Status
+	if st.CreatingSince == nil {
+		return ctrl.Result{}, false
+	}
+	now, since := p.now(), st.CreatingSince.Time
+	until := since.Add(p.r.Config.Kaname.CreateGrace.Duration)
+	if !now.Before(until) {
+		p.r.Recorder.Eventf(p.sa, nil, corev1.EventTypeWarning, "CreateUnconfirmed", "Reconcile",
+			"the kaname account created at %s did not show up within kaname.createGrace; proceeding without it",
+			since.UTC().Format(time.RFC3339))
+		st.CreatingSince = nil
+		return ctrl.Result{}, false
+	}
+	p.notReady(iamv1alpha1.ReasonInProgress, fmt.Sprintf("waiting until %s for the kaname account created at %s to show up",
+		until.UTC().Format(time.RFC3339), since.UTC().Format(time.RFC3339)))
+	return ctrl.Result{RequeueAfter: min(pollDelay(since, now), until.Sub(now))}, true
 }
 
 // teardown — шаги снятия существующей своей учётки по одному за проход.

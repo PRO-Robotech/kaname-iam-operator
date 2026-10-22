@@ -195,6 +195,13 @@ type ServiceAccountStatus struct {
 	// не дошёл до status.
 	// +optional
 	AccountID string `json:"accountId,omitempty"`
+	// CreatingSince — время намерения создать учётку: пишется ДО вызова
+	// Create и снимается, когда исход создания известен (завершённая
+	// операция либо учётка с этим именем в аккаунте). Пока оно есть и
+	// kaname.createGrace не истёк, удаление CR не считает пустой поиск
+	// доказательством, что учётки нет.
+	// +optional
+	CreatingSince *metav1.Time `json:"creatingSince,omitempty"`
 	// DisabledBySpec — учётку отключил оператор по spec.enabled=false.
 	// Пишется ДО вызова отключения; по нему включение по spec отличается от
 	// отключения мимо оператора: первое исполняется, второе — дрейф.

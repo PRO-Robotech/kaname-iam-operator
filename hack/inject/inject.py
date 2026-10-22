@@ -91,6 +91,17 @@ INJ = [
  ("I20 own stray binding kept", "internal/controller/accessbinding_controller.go",
   "\t\tcase owned && (st.Replaced == nil || b.GetId() != st.Replaced.ID):", "\t\tcase owned && false:",
   "./internal/controller/", "TestABTargetChangedDuringReplacementLeavesOneLiveBinding"),
+ # Окно неподтверждённого создания: kaname заводит объект фоном, пустой
+ # поиск сразу после ответа Create — не доказательство отсутствия. Без окна
+ # краснеют фоновые варианты проб гонки (inline держит поиск по меткам).
+ ("I30 unconfirmed binding create not awaited", "internal/controller/accessbinding_controller.go",
+  "\tif st.PendingHash == \"\" {\n\t\treturn ctrl.Result{}, false\n\t}",
+  "\tif true {\n\t\treturn ctrl.Result{}, false\n\t}",
+  "./internal/controller/", "TestABDeletedDuringCreateLeavesNoLiveBinding|TestABTargetChangedDuringReplacementLeavesOneLiveBinding"),
+ ("I31 unconfirmed account create not awaited", "internal/controller/serviceaccount_controller.go",
+  "\tif st.CreatingSince == nil {\n\t\treturn ctrl.Result{}, false\n\t}",
+  "\tif true {\n\t\treturn ctrl.Result{}, false\n\t}",
+  "./internal/controller/", "TestSADeletedDuringCreateLeavesNoAccount"),
  ("I21 account finalize does not look up its own by name", "internal/controller/serviceaccount_controller.go",
   "\t\tfor _, acc := range accounts {", "\t\tfor _, acc := range accounts[:0] {",
   "./internal/controller/", "TestSADeletedDuringCreateLeavesNoAccount"),

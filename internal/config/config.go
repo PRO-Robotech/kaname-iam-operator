@@ -50,6 +50,11 @@ type Kaname struct {
 	CallTimeout Duration `json:"callTimeout,omitempty"`
 	// AssertionTTL — срок утверждения TokenRequest (≥ 10 мин, ≤ 1 ч).
 	AssertionTTL Duration `json:"assertionTTL,omitempty"`
+	// CreateGrace — сколько ждать исхода создания, чей ответ потерян: kaname
+	// заводит объект фоном после ответа Create, и пока окно не истекло, пустой
+	// поиск не доказывает, что объекта нет (удаление не снимает финализатор,
+	// новая выдача не заводится).
+	CreateGrace Duration `json:"createGrace,omitempty"`
 	// QPS и Burst — ограничитель темпа вызовов kaname.
 	QPS   float64 `json:"qps,omitempty"`
 	Burst int     `json:"burst,omitempty"`
@@ -169,6 +174,8 @@ const (
 	maxAssertionTTL      = time.Hour
 	defaultAssertionTTL  = minAssertionTTL
 	defaultOrphanGrace   = 10 * time.Minute
+	defaultCreateGrace   = 10 * time.Minute
+	minCreateGrace       = time.Minute
 	minOrphanGrace       = time.Minute
 	defaultQPS           = 10
 	defaultBurst         = 20
@@ -228,6 +235,9 @@ func (c *Config) applyDefaults() {
 	if c.Kaname.TokenURL == "" && c.Kaname.APIURL != "" {
 		c.Kaname.TokenURL = strings.TrimSuffix(c.Kaname.APIURL, "/") + defaultTokenEndpoint
 	}
+	if c.Kaname.CreateGrace.Duration == 0 {
+		c.Kaname.CreateGrace.Duration = defaultCreateGrace
+	}
 	if c.Kaname.QPS == 0 {
 		c.Kaname.QPS = defaultQPS
 	}
@@ -264,6 +274,9 @@ func (c *Config) Validate() error {
 	}
 	if d := c.Kaname.AssertionTTL.Duration; d < minAssertionTTL || d > maxAssertionTTL {
 		add("kaname.assertionTTL %s must be in [%s, %s]", d, minAssertionTTL, maxAssertionTTL)
+	}
+	if d := c.Kaname.CreateGrace.Duration; d < minCreateGrace {
+		add("kaname.createGrace %s must be at least %s", d, minCreateGrace)
 	}
 	if c.Kaname.QPS < 0 || c.Kaname.Burst < 1 {
 		add("kaname.qps must be >= 0 and kaname.burst >= 1")

@@ -403,13 +403,14 @@ func bindingHash(subjects []*iamv1.Subject, roleID, scopeType, scopeID string, t
 	return hex.EncodeToString(h[:16])
 }
 
-// sameBinding — совпадает ли выдача kaname с желаемой по неизменяемой части.
-func sameBinding(b *iamv1.AccessBinding, want desired) bool {
+// sameBinding — действующая ли это выдача kaname с отпечатком hash
+// неизменяемой части.
+func sameBinding(b *iamv1.AccessBinding, hash string) bool {
 	if b.GetStatus() == iamv1.AccessBinding_REVOKED || b.GetTarget().GetAllInScope() != nil {
 		return false
 	}
 	return bindingHash(b.GetSubjects(), b.GetRoleId(), b.GetScopeType(), b.GetScopeId(),
-		b.GetTarget().GetResources().GetResources(), expiresOf(b)) == want.hash
+		b.GetTarget().GetResources().GetResources(), expiresOf(b)) == hash
 }
 
 // expiresOf — срок выдачи kaname в той же форме, что и в spec.
@@ -425,11 +426,17 @@ func expiresOf(b *iamv1.AccessBinding) *metav1.Time {
 // Чужая выдача с тем же ключом — Conflict без вызовов. Свои выдачи с другим
 // ключом, кроме прежней (Replaced), — следы создания, чей id не дошёл до
 // status: они отзываются раньше, чем заводится новая, по одной за проход.
+// Пока прежнее создание не подтверждено (awaitCreate), ни усыновления, ни
+// нового создания нет: его выдача ещё может появиться в списке.
 func (p *abPass) ensureBinding(ctx context.Context, want desired) (ctrl.Result, error) {
 	ab, st := p.ab, &p.ab.Status
 	list, err := p.r.Kaname.ListAccessBindingsByAccount(ctx, want.resolved.AccountID)
 	if err != nil {
 		return p.fail(err)
+	}
+	p.seeIntent(list)
+	if res, wait := p.awaitCreate(); wait {
+		return res, nil
 	}
 	var adopt *iamv1.AccessBinding
 	for _, b := range list {
@@ -438,9 +445,9 @@ func (p *abPass) ensureBinding(ctx context.Context, want desired) (ctrl.Result, 
 		}
 		owned := p.owned(b.GetLabels())
 		switch {
-		case sameBinding(b, want) && !owned:
+		case sameBinding(b, want.hash) && !owned:
 			return p.conflict(fmt.Sprintf("kaname binding %s with the same subjects, role, scope and target exists and is not owned by this object", b.GetId()))
-		case sameBinding(b, want):
+		case sameBinding(b, want.hash):
 			adopt = b
 		case owned && (st.Replaced == nil || b.GetId() != st.Replaced.ID):
 			p.r.Recorder.Eventf(ab, nil, corev1.EventTypeNormal, "RevokingStray", "Reconcile",
@@ -449,7 +456,8 @@ func (p *abPass) ensureBinding(ctx context.Context, want desired) (ctrl.Result, 
 		}
 	}
 	if adopt != nil {
-		st.ID, st.BindingHash, st.PendingHash = adopt.GetId(), want.hash, ""
+		st.ID, st.BindingHash = adopt.GetId(), want.hash
+		p.clearIntent()
 		resolved := want.resolved
 		st.Resolved = &resolved
 		// Возврат прежней цели: прежняя выдача снова действующая, отзывать её
@@ -467,20 +475,28 @@ func (p *abPass) ensureBinding(ctx context.Context, want desired) (ctrl.Result, 
 	if ab.Spec.ExpiresAt != nil {
 		req.ExpiresAt = timestamppb.New(ab.Spec.ExpiresAt.Time)
 	}
-	// Намерение — до вызова, с проверкой resourceVersion: аккаунт выдачи и её
-	// отпечаток. Конфликт версии — выдачи нет; запись после вызова потеряна —
-	// выдача находится по меткам владения и при следующем проходе, и при
-	// удалении CR.
+	// Намерение — до вызова, с проверкой resourceVersion: аккаунт выдачи, её
+	// отпечаток и время. Конфликт версии — выдачи нет; запись после вызова
+	// потеряна — выдача находится по меткам владения и при следующем проходе,
+	// и при удалении CR, а пока она не видна, её ждут (awaitCreate).
 	resolved := want.resolved
-	st.Resolved, st.PendingHash = &resolved, want.hash
+	since := metav1.NewTime(p.now())
+	st.Resolved, st.PendingHash, st.PendingSince = &resolved, want.hash, &since
 	p.notReady(iamv1alpha1.ReasonInProgress, "creating the kaname binding")
 	if err := p.save(ctx); err != nil {
 		return ctrl.Result{}, err
 	}
 	op, err := p.r.Kaname.CreateAccessBinding(ctx, req)
 	if err != nil {
-		if kaname.Classify(err) == kaname.ClassAlreadyExists {
+		switch kaname.Classify(err) {
+		case kaname.ClassAlreadyExists:
+			// Выдача с тем же ключом уже есть: следующий проход её найдёт.
+			p.clearIntent()
 			return ctrl.Result{RequeueAfter: requeueNow}, nil
+		case kaname.ClassInvalid, kaname.ClassForbidden, kaname.ClassNotFound:
+			// Отказ до запуска операции: выдачи не будет. Прочие отказы
+			// (обрыв, таймаут, 5xx) исхода не называют — намерение остаётся.
+			p.clearIntent()
 		}
 		return p.fail(err)
 	}
@@ -552,14 +568,15 @@ func (p *abPass) apply(ctx context.Context, verb iamv1alpha1.OperationVerb, subj
 		err := kaname.OperationResult(op, &out)
 		switch {
 		case err == nil:
-			st.ID, st.BindingHash, st.PendingHash = out.GetId(), st.PendingHash, ""
+			st.ID, st.BindingHash = out.GetId(), st.PendingHash
+			p.clearIntent()
 			p.r.Recorder.Eventf(p.ab, nil, corev1.EventTypeNormal, "Created", "Reconcile", "created kaname binding %s", out.GetId())
 		case kaname.Classify(err) == kaname.ClassAlreadyExists:
 			// Выдача с тем же ключом появилась между поиском и созданием:
 			// следующий проход найдёт её и решит, своя ли она.
-			st.PendingHash = ""
+			p.clearIntent()
 		default:
-			st.PendingHash = ""
+			p.clearIntent()
 			return p.fail(err)
 		}
 	case iamv1alpha1.VerbRevoke:
@@ -600,7 +617,9 @@ func (p *abPass) finalize(ctx context.Context) (ctrl.Result, error) {
 		return p.revoke(ctx, st.ID)
 	}
 	// Выдача могла завестись, но не дойти до status: ищется своя по меткам в
-	// аккаунте намерения и в аккаунте namespace.
+	// аккаунте намерения и в аккаунте namespace. Не найдена, а создание не
+	// подтверждено, — финализатор держится до её появления либо до истечения
+	// окна (awaitCreate).
 	recorded := ""
 	if st.Resolved != nil {
 		recorded = st.Resolved.AccountID
@@ -614,13 +633,68 @@ func (p *abPass) finalize(ctx context.Context) (ctrl.Result, error) {
 		if err != nil {
 			return p.fail(err)
 		}
+		p.seeIntent(list)
 		for _, b := range list {
 			if b.GetStatus() != iamv1.AccessBinding_REVOKED && p.owned(b.GetLabels()) {
 				return p.revoke(ctx, b.GetId())
 			}
 		}
 	}
+	if res, wait := p.awaitCreate(); wait {
+		return res, nil
+	}
 	return p.removeFinalizer(ctx)
+}
+
+// clearIntent снимает намерение создания: его исход известен.
+func (p *abPass) clearIntent() {
+	p.ab.Status.PendingHash, p.ab.Status.PendingSince = "", nil
+}
+
+// seeIntent снимает намерение, если его выдача видна в списке действующей:
+// исход создания известен. Отозванная выдача с тем же отпечатком исходом не
+// считается — это может быть прежняя выдача с той же целью.
+func (p *abPass) seeIntent(list []*iamv1.AccessBinding) {
+	hash := p.ab.Status.PendingHash
+	if hash == "" {
+		return
+	}
+	for _, b := range list {
+		if p.owned(b.GetLabels()) && sameBinding(b, hash) {
+			p.clearIntent()
+			return
+		}
+	}
+}
+
+// awaitCreate — создание не подтверждено (PendingHash есть, операции в
+// status нет): kaname заводит выдачу фоном после ответа Create, и пустой
+// список ещё не доказывает, что её не будет. Пока окно kaname.createGrace от
+// PendingSince не истекло, проход ждёт (wait); истекло — намерение снимается
+// с предупреждением, и проход идёт дальше.
+func (p *abPass) awaitCreate() (res ctrl.Result, wait bool) {
+	st := &p.ab.Status
+	if st.PendingHash == "" {
+		return ctrl.Result{}, false
+	}
+	now := p.now()
+	if st.PendingSince == nil {
+		// Намерение, записанное без времени, — окно отсчитывается от сейчас.
+		t := metav1.NewTime(now)
+		st.PendingSince = &t
+	}
+	since := st.PendingSince.Time
+	until := since.Add(p.r.Config.Kaname.CreateGrace.Duration)
+	if !now.Before(until) {
+		p.r.Recorder.Eventf(p.ab, nil, corev1.EventTypeWarning, "CreateUnconfirmed", "Reconcile",
+			"the kaname binding created at %s did not show up within kaname.createGrace; proceeding without it",
+			since.UTC().Format(time.RFC3339))
+		p.clearIntent()
+		return ctrl.Result{}, false
+	}
+	p.notReady(iamv1alpha1.ReasonInProgress, fmt.Sprintf("waiting until %s for the kaname binding created at %s to show up",
+		until.UTC().Format(time.RFC3339), since.UTC().Format(time.RFC3339)))
+	return ctrl.Result{RequeueAfter: min(pollDelay(since, now), until.Sub(now))}, true
 }
 
 func (p *abPass) removeFinalizer(ctx context.Context) (ctrl.Result, error) {

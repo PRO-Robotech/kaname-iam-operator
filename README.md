@@ -26,12 +26,17 @@ accepts every assertion once) and exchanges it at `POST /iam/v1/token`
   An account the operator disabled because of `spec.enabled: false` is recorded as such
   in `status.disabledBySpec` before the call, and `spec.enabled: true` enables it again.
 * **Intent before creation.** Before creating an account or a binding the operator writes
-  its intent to `status` with a resourceVersion check (the account; for a binding also
-  its fingerprint). An object created whose id never reached `status` is found again by
-  its ownership labels: adopted on the next pass, revoked or deleted when the CR is
-  deleted (the account is taken from `status`, else from the namespace annotation), and
-  a binding owned by the CR but not the one it holds is revoked before a new one is
-  created.
+  its intent to `status` with a resourceVersion check (the account and the time; for a
+  binding also its fingerprint). An object created whose id never reached `status` is
+  found again by its ownership labels: adopted on the next pass, revoked or deleted when
+  the CR is deleted (the account is taken from `status`, else from the namespace
+  annotation), and a binding owned by the CR but not the one it holds is revoked before a
+  new one is created. kaname creates the object in the background after answering the
+  call, so until the creation is confirmed — by its operation or by the object showing
+  up — an empty lookup is not taken as proof of absence: for `kaname.createGrace`
+  (default 10m) from the intent the CR keeps its finalizer and no second binding is
+  created. A creation still unconfirmed after the window is reported as a
+  `CreateUnconfirmed` warning event.
 * **Key protocol.** Before issuing, the intent (nonce, time) is written to `status` with
   a resourceVersion check; the nonce goes into the key labels in kaname and into the
   Vault record; the Vault record is written with check-and-set. A crash between any two
